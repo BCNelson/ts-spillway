@@ -13,6 +13,7 @@ func TestLoadServerConfig_Defaults(t *testing.T) {
 		"SPILLWAY_BASE_DOMAIN", "SPILLWAY_REDIS_ADDR", "SPILLWAY_PORT_RANGE",
 		"SPILLWAY_ACME_EMAIL", "SPILLWAY_ACME_DIRECTORY", "SPILLWAY_TS_STATE_DIR",
 		"SPILLWAY_API_PORT", "SPILLWAY_HEARTBEAT_TTL",
+		"SPILLWAY_TS_HOSTNAME", "SPILLWAY_SERVICE_NAME",
 	} {
 		t.Setenv(e, "")
 	}
@@ -29,6 +30,8 @@ func TestLoadServerConfig_Defaults(t *testing.T) {
 	assert.Equal(t, "tsnet-spillway", cfg.TSStateDir)
 	assert.Equal(t, 9090, cfg.RegistrationAPIPort)
 	assert.Equal(t, 90, cfg.HeartbeatTTL)
+	assert.Equal(t, "spillway", cfg.TSHostname)
+	assert.Equal(t, "svc:spillway", cfg.ServiceName)
 }
 
 func TestLoadServerConfig_EnvOverrides(t *testing.T) {
@@ -38,6 +41,8 @@ func TestLoadServerConfig_EnvOverrides(t *testing.T) {
 	t.Setenv("SPILLWAY_ACME_EMAIL", "admin@example.com")
 	t.Setenv("SPILLWAY_API_PORT", "8080")
 	t.Setenv("SPILLWAY_HEARTBEAT_TTL", "120")
+	t.Setenv("SPILLWAY_TS_HOSTNAME", "spillway-2")
+	t.Setenv("SPILLWAY_SERVICE_NAME", "svc:my-spillway")
 
 	cfg, err := LoadServerConfig()
 	require.NoError(t, err)
@@ -49,6 +54,8 @@ func TestLoadServerConfig_EnvOverrides(t *testing.T) {
 	assert.Equal(t, "admin@example.com", cfg.ACMEEmail)
 	assert.Equal(t, 8080, cfg.RegistrationAPIPort)
 	assert.Equal(t, 120, cfg.HeartbeatTTL)
+	assert.Equal(t, "spillway-2", cfg.TSHostname)
+	assert.Equal(t, "svc:my-spillway", cfg.ServiceName)
 }
 
 func TestLoadServerConfig_InvalidPortRange(t *testing.T) {

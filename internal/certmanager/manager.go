@@ -3,6 +3,7 @@ package certmanager
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -35,6 +36,7 @@ type Manager struct {
 	store  CertStore
 	issuer CertIssuer
 	logger *slog.Logger
+	locker Locker
 
 	// In-memory cache of parsed certificates keyed by wildcard domain.
 	mu    sync.RWMutex
@@ -49,6 +51,12 @@ func NewManager(store CertStore, issuer CertIssuer, logger *slog.Logger) *Manage
 		logger: logger,
 		cache:  make(map[string]*tls.Certificate),
 	}
+}
+
+// WithLocker sets an optional distributed locker for coordinating cert issuance
+// across multiple instances. When nil (default), no locking is performed.
+func (m *Manager) WithLocker(locker Locker) {
+	m.locker = locker
 }
 
 // GetCertificate implements tls.Config.GetCertificate.
@@ -103,6 +111,8 @@ func (m *Manager) getCertForDomain(domain string) (*tls.Certificate, error) {
 }
 
 // EnsureCert obtains a certificate for the given domain, issuing one if needed.
+// When a Locker is configured, it uses a distributed lock with double-check
+// to prevent concurrent issuance across multiple instances.
 func (m *Manager) EnsureCert(ctx context.Context, domain string) error {
 	stored, err := m.store.GetCert(ctx, domain)
 	if err != nil {
@@ -112,6 +122,28 @@ func (m *Manager) EnsureCert(ctx context.Context, domain string) error {
 	// If cert exists and isn't expiring within 30 days, we're good
 	if stored != nil && time.Until(stored.NotAfter) > 30*24*time.Hour {
 		return nil
+	}
+
+	// If a locker is configured, acquire a per-domain lock before issuing.
+	if m.locker != nil {
+		release, err := m.locker.Acquire(ctx, domain)
+		if err != nil {
+			if errors.Is(err, ErrLockNotAcquired) {
+				m.logger.Info("cert issuance already in progress on another instance", "domain", domain)
+				return nil
+			}
+			return fmt.Errorf("acquiring lock for %s: %w", domain, err)
+		}
+		defer release(ctx)
+
+		// Double-check: another instance may have issued while we waited.
+		stored, err = m.store.GetCert(ctx, domain)
+		if err != nil {
+			return err
+		}
+		if stored != nil && time.Until(stored.NotAfter) > 30*24*time.Hour {
+			return nil
+		}
 	}
 
 	m.logger.Info("issuing certificate", "domain", domain)

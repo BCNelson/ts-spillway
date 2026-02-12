@@ -35,6 +35,12 @@ type ServerConfig struct {
 
 	// HeartbeatTTL is the TTL in seconds for registration keys in Redis.
 	HeartbeatTTL int
+
+	// TSHostname is the Tailscale hostname for this instance (must be unique per instance).
+	TSHostname string
+
+	// ServiceName is the Tailscale Service name used for service discovery (e.g., "svc:spillway").
+	ServiceName string
 }
 
 // LoadServerConfig reads configuration from environment variables with sensible defaults.
@@ -47,6 +53,8 @@ func LoadServerConfig() (*ServerConfig, error) {
 		TSStateDir:          envOrDefault("SPILLWAY_TS_STATE_DIR", "tsnet-spillway"),
 		RegistrationAPIPort: envIntOrDefault("SPILLWAY_API_PORT", 9090),
 		HeartbeatTTL:        envIntOrDefault("SPILLWAY_HEARTBEAT_TTL", 90),
+		TSHostname:          envOrDefault("SPILLWAY_TS_HOSTNAME", "spillway"),
+		ServiceName:         envOrDefault("SPILLWAY_SERVICE_NAME", "svc:spillway"),
 	}
 
 	portRange := envOrDefault("SPILLWAY_PORT_RANGE", "8000-9000")

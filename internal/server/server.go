@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -76,7 +77,7 @@ func (s *Server) WithTSOverrides(overrides *TSOverrides) {
 func (s *Server) Start(ctx context.Context) error {
 	// Initialize tsnet
 	s.tsServer = &tsnet.Server{
-		Hostname: "spillway",
+		Hostname: s.cfg.TSHostname,
 		Dir:      s.cfg.TSStateDir,
 	}
 	if s.tsOverrides != nil {
@@ -104,12 +105,35 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	s.authn = auth.NewAuthenticator(lc)
 
-	// Start registration API on tsnet listener
-	apiLn, err := s.tsServer.Listen("tcp", fmt.Sprintf(":%d", s.cfg.RegistrationAPIPort))
-	if err != nil {
-		return fmt.Errorf("listening on tsnet port %d: %w", s.cfg.RegistrationAPIPort, err)
+	// Start registration API listener.
+	// Try ListenService first for Tailscale Services (multi-instance load balancing).
+	// Fall back to plain Listen if the node is untagged (single-instance / dev mode).
+	var apiLn net.Listener
+	if s.cfg.ServiceName != "" {
+		svcLn, svcErr := s.tsServer.ListenService(s.cfg.ServiceName, tsnet.ServiceModeHTTP{
+			Port: uint16(s.cfg.RegistrationAPIPort),
+		})
+		if svcErr != nil {
+			if errors.Is(svcErr, tsnet.ErrUntaggedServiceHost) {
+				s.logger.Warn("node is untagged, falling back to plain listener (single-instance mode)",
+					"service", s.cfg.ServiceName)
+			} else {
+				return fmt.Errorf("ListenService %q: %w", s.cfg.ServiceName, svcErr)
+			}
+		} else {
+			apiLn = svcLn
+			s.logger.Info("registration API advertised as Tailscale Service",
+				"service", s.cfg.ServiceName, "fqdn", svcLn.FQDN, "port", s.cfg.RegistrationAPIPort)
+		}
 	}
-	s.logger.Info("registration API listening", "port", s.cfg.RegistrationAPIPort)
+	if apiLn == nil {
+		ln, listenErr := s.tsServer.Listen("tcp", fmt.Sprintf(":%d", s.cfg.RegistrationAPIPort))
+		if listenErr != nil {
+			return fmt.Errorf("listening on tsnet port %d: %w", s.cfg.RegistrationAPIPort, listenErr)
+		}
+		apiLn = ln
+		s.logger.Info("registration API listening", "port", s.cfg.RegistrationAPIPort)
+	}
 
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc("/api/v1/register", s.handleRegister)

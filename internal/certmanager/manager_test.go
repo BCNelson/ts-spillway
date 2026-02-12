@@ -289,3 +289,125 @@ func TestRenewExpiring(t *testing.T) {
 
 	assert.Equal(t, []string{"*.test.example.com"}, renewed)
 }
+
+// --- mock locker ---
+
+type mockLocker struct {
+	acquireFn func(ctx context.Context, key string) (func(ctx context.Context), error)
+}
+
+func (m *mockLocker) Acquire(ctx context.Context, key string) (func(ctx context.Context), error) {
+	if m.acquireFn != nil {
+		return m.acquireFn(ctx, key)
+	}
+	return func(ctx context.Context) {}, nil
+}
+
+// --- EnsureCert with Locker tests ---
+
+func TestEnsureCert_WithLocker_AcquiredAndIssues(t *testing.T) {
+	certPEM, keyPEM, err := testutil.GenerateSelfSignedCert("*.test.example.com", time.Now().Add(90*24*time.Hour))
+	require.NoError(t, err)
+
+	issued := false
+	released := false
+	store := &mockCertStore{
+		saveCertFn: func(_ context.Context, _ string, _ []byte, _ []byte, _ time.Time) error {
+			return nil
+		},
+	}
+	issuer := &mockCertIssuer{
+		issueFn: func(_ context.Context, _ string) ([]byte, []byte, time.Time, error) {
+			issued = true
+			return certPEM, keyPEM, time.Now().Add(90 * 24 * time.Hour), nil
+		},
+	}
+	locker := &mockLocker{
+		acquireFn: func(_ context.Context, _ string) (func(ctx context.Context), error) {
+			return func(_ context.Context) { released = true }, nil
+		},
+	}
+
+	mgr := NewManager(store, issuer, slog.Default())
+	mgr.WithLocker(locker)
+
+	require.NoError(t, mgr.EnsureCert(context.Background(), "*.test.example.com"))
+	assert.True(t, issued, "issuer should have been called")
+	assert.True(t, released, "lock should have been released")
+}
+
+func TestEnsureCert_WithLocker_NotAcquired_Skips(t *testing.T) {
+	issuer := &mockCertIssuer{
+		issueFn: func(_ context.Context, _ string) ([]byte, []byte, time.Time, error) {
+			t.Fatal("issuer should not be called when lock is not acquired")
+			return nil, nil, time.Time{}, nil
+		},
+	}
+	locker := &mockLocker{
+		acquireFn: func(_ context.Context, _ string) (func(ctx context.Context), error) {
+			return nil, ErrLockNotAcquired
+		},
+	}
+
+	mgr := NewManager(&mockCertStore{}, issuer, slog.Default())
+	mgr.WithLocker(locker)
+
+	// Should not error — just skips issuance
+	require.NoError(t, mgr.EnsureCert(context.Background(), "*.test.example.com"))
+}
+
+func TestEnsureCert_WithLocker_DoubleCheck_SkipsIfFresh(t *testing.T) {
+	getCertCalls := 0
+	store := &mockCertStore{
+		getCertFn: func(_ context.Context, _ string) (*StoredCert, error) {
+			getCertCalls++
+			if getCertCalls == 1 {
+				// First check: no cert
+				return nil, nil
+			}
+			// Second check (after lock): cert now exists (another instance issued it)
+			return &StoredCert{NotAfter: time.Now().Add(60 * 24 * time.Hour)}, nil
+		},
+	}
+	issuer := &mockCertIssuer{
+		issueFn: func(_ context.Context, _ string) ([]byte, []byte, time.Time, error) {
+			t.Fatal("issuer should not be called after double-check finds fresh cert")
+			return nil, nil, time.Time{}, nil
+		},
+	}
+	locker := &mockLocker{
+		acquireFn: func(_ context.Context, _ string) (func(ctx context.Context), error) {
+			return func(_ context.Context) {}, nil
+		},
+	}
+
+	mgr := NewManager(store, issuer, slog.Default())
+	mgr.WithLocker(locker)
+
+	require.NoError(t, mgr.EnsureCert(context.Background(), "*.test.example.com"))
+	assert.Equal(t, 2, getCertCalls, "store should have been checked twice (before and after lock)")
+}
+
+func TestEnsureCert_NilLocker_StillWorks(t *testing.T) {
+	certPEM, keyPEM, err := testutil.GenerateSelfSignedCert("*.test.example.com", time.Now().Add(90*24*time.Hour))
+	require.NoError(t, err)
+
+	issued := false
+	store := &mockCertStore{
+		saveCertFn: func(_ context.Context, _ string, _ []byte, _ []byte, _ time.Time) error {
+			return nil
+		},
+	}
+	issuer := &mockCertIssuer{
+		issueFn: func(_ context.Context, _ string) ([]byte, []byte, time.Time, error) {
+			issued = true
+			return certPEM, keyPEM, time.Now().Add(90 * 24 * time.Hour), nil
+		},
+	}
+
+	mgr := NewManager(store, issuer, slog.Default())
+	// No WithLocker call — locker is nil
+
+	require.NoError(t, mgr.EnsureCert(context.Background(), "*.test.example.com"))
+	assert.True(t, issued, "issuer should still be called with nil locker")
+}

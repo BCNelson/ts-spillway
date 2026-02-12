@@ -61,6 +61,7 @@ func main() {
 	}
 
 	certMgr := certmanager.NewManager(certStore, certIssuer, logger)
+	certMgr.WithLocker(certmanager.NewRedisLocker(rdb, 5*time.Minute))
 
 	// Create and start server
 	srv := server.New(cfg, store, certMgr, logger)
