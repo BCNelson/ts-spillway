@@ -1,0 +1,9 @@
+.devenv/
+.direnv/
+
+# Go binaries
+/spillway
+/spillway-server
+
+# Tailscale state
+tsnet-spillway/
