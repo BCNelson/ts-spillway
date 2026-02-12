@@ -20,13 +20,19 @@ import (
 	"tailscale.com/tsnet"
 )
 
+// Identifier abstracts authentication so that handlers can be tested
+// without a real Tailscale connection. *auth.Authenticator satisfies this interface.
+type Identifier interface {
+	Identify(r *http.Request) (*auth.Identity, error)
+}
+
 // Server is the main spillway server.
 type Server struct {
 	cfg          *config.ServerConfig
 	store        registry.Store
 	certMgr      *certmanager.Manager
 	tsServer     *tsnet.Server
-	authn        *auth.Authenticator
+	authn        Identifier
 	proxyHandler *proxy.Proxy
 	listeners    *ListenerManager
 	logger       *slog.Logger

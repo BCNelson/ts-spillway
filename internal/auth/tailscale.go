@@ -8,7 +8,14 @@ import (
 	"strings"
 
 	"tailscale.com/client/local"
+	"tailscale.com/client/tailscale/apitype"
 )
+
+// WhoIser abstracts the Tailscale WhoIs API so that Authenticator can be tested
+// without a real Tailscale connection. *local.Client satisfies this interface.
+type WhoIser interface {
+	WhoIs(ctx context.Context, remoteAddr string) (*apitype.WhoIsResponse, error)
+}
 
 // Identity represents an authenticated Tailscale user and their machine.
 type Identity struct {
@@ -21,12 +28,17 @@ type Identity struct {
 
 // Authenticator authenticates requests using the Tailscale WhoIs API.
 type Authenticator struct {
-	lc *local.Client
+	lc WhoIser
 }
 
 // NewAuthenticator creates an Authenticator backed by the given LocalClient.
 func NewAuthenticator(lc *local.Client) *Authenticator {
 	return &Authenticator{lc: lc}
+}
+
+// NewAuthenticatorFromWhoIser creates an Authenticator backed by any WhoIser implementation.
+func NewAuthenticatorFromWhoIser(w WhoIser) *Authenticator {
+	return &Authenticator{lc: w}
 }
 
 // Identify extracts the caller's Tailscale identity from the request.
