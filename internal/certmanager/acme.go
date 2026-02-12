@@ -11,6 +11,8 @@ import (
 
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/certificate"
+	"github.com/go-acme/lego/v4/challenge"
+	"github.com/go-acme/lego/v4/challenge/dns01"
 	"github.com/go-acme/lego/v4/lego"
 	"github.com/go-acme/lego/v4/providers/dns/route53"
 	"github.com/go-acme/lego/v4/registration"
@@ -32,9 +34,11 @@ type ACMEIssuer struct {
 	client *lego.Client
 }
 
-// NewACMEIssuer creates an ACMEIssuer configured for DNS-01 with Route53.
-// Route53 credentials are read from standard AWS environment variables.
-func NewACMEIssuer(email, acmeDirectory string) (*ACMEIssuer, error) {
+// NewACMEIssuer creates an ACMEIssuer configured for DNS-01 challenge.
+// When dnsProvider is nil, Route53 is used (credentials from AWS env vars).
+// When dnsProvider is non-nil, the provided DNS challenge provider is used
+// along with any additional challenge options (e.g., for test environments).
+func NewACMEIssuer(email, acmeDirectory string, dnsProvider challenge.Provider, challengeOpts ...dns01.ChallengeOption) (*ACMEIssuer, error) {
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generating ACME account key: %w", err)
@@ -54,12 +58,15 @@ func NewACMEIssuer(email, acmeDirectory string) (*ACMEIssuer, error) {
 		return nil, fmt.Errorf("creating ACME client: %w", err)
 	}
 
-	provider, err := route53.NewDNSProvider()
-	if err != nil {
-		return nil, fmt.Errorf("creating Route53 DNS provider: %w", err)
+	if dnsProvider == nil {
+		provider, err := route53.NewDNSProvider()
+		if err != nil {
+			return nil, fmt.Errorf("creating Route53 DNS provider: %w", err)
+		}
+		dnsProvider = provider
 	}
 
-	if err := client.Challenge.SetDNS01Provider(provider); err != nil {
+	if err := client.Challenge.SetDNS01Provider(dnsProvider, challengeOpts...); err != nil {
 		return nil, fmt.Errorf("setting DNS-01 provider: %w", err)
 	}
 

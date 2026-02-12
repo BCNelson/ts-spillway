@@ -13,9 +13,10 @@ import (
 
 // Proxy reverse-proxies public requests to the appropriate Tailscale client.
 type Proxy struct {
-	store  registry.Store
-	router *router.Router
-	logger *slog.Logger
+	store     registry.Store
+	router    *router.Router
+	logger    *slog.Logger
+	transport http.RoundTripper
 }
 
 // NewProxy creates a new Proxy.
@@ -25,6 +26,13 @@ func NewProxy(store registry.Store, router *router.Router, logger *slog.Logger) 
 		router: router,
 		logger: logger,
 	}
+}
+
+// SetTransport sets the HTTP transport used for proxying requests to backends.
+// This should be configured with a DialContext that routes through the Tailscale
+// network (e.g., tsnet.Server.Dial) so the proxy can reach Tailscale IPs.
+func (p *Proxy) SetTransport(rt http.RoundTripper) {
+	p.transport = rt
 }
 
 // ServeHTTP handles incoming public requests by routing and proxying them.
@@ -53,6 +61,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxy := &httputil.ReverseProxy{
+		Transport: p.transport,
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
