@@ -61,6 +61,41 @@ Configure the server with environment variables:
 | `SPILLWAY_TS_STATE_DIR` | `tsnet-spillway` | Tailscale state directory |
 | `SPILLWAY_API_PORT` | `9090` | Registration API port (Tailscale-side) |
 | `SPILLWAY_HEARTBEAT_TTL` | `90` | Registration TTL in seconds |
+| `SPILLWAY_TS_HOSTNAME` | `spillway` | Tailscale hostname for this instance |
+| `SPILLWAY_SERVICE_NAME` | `svc:spillway` | Tailscale Service name for discovery |
+| `SPILLWAY_TS_AUTH_KEY` | *(none)* | Tailscale auth key |
+| `SPILLWAY_TS_CLIENT_ID` | *(none)* | OAuth / WIF client ID |
+| `SPILLWAY_TS_CLIENT_SECRET` | *(none)* | OAuth client secret |
+| `SPILLWAY_TS_ID_TOKEN` | *(none)* | WIF OIDC ID token |
+| `SPILLWAY_TS_AUDIENCE` | *(none)* | WIF OIDC audience |
+| `SPILLWAY_TS_EPHEMERAL` | `false` | Mark node as ephemeral (`true`/`false`) |
+
+Every `SPILLWAY_TS_*` variable (except `SPILLWAY_TS_EPHEMERAL`) also supports a `_FILE` suffix (e.g., `SPILLWAY_TS_AUTH_KEY_FILE=/run/secrets/ts-auth-key`) that reads the value from a file. This is useful for Docker secrets and Kubernetes secret volumes. If both the direct variable and the `_FILE` variant are set, the direct variable takes priority.
+
+### Tailscale authentication
+
+The server joins the tailnet using `tsnet`. Three authentication methods are supported:
+
+**Auth Key** — simplest option for automated deployments:
+```sh
+export SPILLWAY_TS_AUTH_KEY=tskey-auth-...
+# or via file:
+export SPILLWAY_TS_AUTH_KEY_FILE=/run/secrets/ts-auth-key
+```
+
+**OAuth Client** — for headless servers using Tailscale OAuth credentials:
+```sh
+export SPILLWAY_TS_CLIENT_ID=oidc-client-id
+export SPILLWAY_TS_CLIENT_SECRET=oidc-client-secret
+```
+
+**Workload Identity Federation** — OIDC-based authentication using `ClientID` with either an `IDToken` or `Audience`:
+```sh
+export SPILLWAY_TS_CLIENT_ID=oidc-client-id
+export SPILLWAY_TS_ID_TOKEN=eyJhbGci...    # or SPILLWAY_TS_AUDIENCE=https://...
+```
+
+If none of the `SPILLWAY_TS_*` auth variables are set, the server falls back to tsnet's native behavior: reading `TS_AUTHKEY` / `TS_AUTH_KEY` env vars, or using persisted state / interactive login.
 
 Run the server:
 

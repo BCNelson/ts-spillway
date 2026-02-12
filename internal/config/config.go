@@ -41,6 +41,24 @@ type ServerConfig struct {
 
 	// ServiceName is the Tailscale Service name used for service discovery (e.g., "svc:spillway").
 	ServiceName string
+
+	// TSAuthKey is a Tailscale auth key for automatic authentication.
+	TSAuthKey string
+
+	// TSClientID is the OAuth client ID for Tailscale OAuth or Workload Identity Federation.
+	TSClientID string
+
+	// TSClientSecret is the OAuth client secret for Tailscale OAuth authentication.
+	TSClientSecret string
+
+	// TSIDToken is the OIDC ID token for Tailscale Workload Identity Federation.
+	TSIDToken string
+
+	// TSAudience is the OIDC audience for Tailscale Workload Identity Federation.
+	TSAudience string
+
+	// TSEphemeral marks the Tailscale node as ephemeral (removed on disconnect).
+	TSEphemeral bool
 }
 
 // LoadServerConfig reads configuration from environment variables with sensible defaults.
@@ -55,6 +73,12 @@ func LoadServerConfig() (*ServerConfig, error) {
 		HeartbeatTTL:        envIntOrDefault("SPILLWAY_HEARTBEAT_TTL", 90),
 		TSHostname:          envOrDefault("SPILLWAY_TS_HOSTNAME", "spillway"),
 		ServiceName:         envOrDefault("SPILLWAY_SERVICE_NAME", "svc:spillway"),
+		TSAuthKey:           envOrFile("SPILLWAY_TS_AUTH_KEY", "SPILLWAY_TS_AUTH_KEY_FILE"),
+		TSClientID:          envOrFile("SPILLWAY_TS_CLIENT_ID", "SPILLWAY_TS_CLIENT_ID_FILE"),
+		TSClientSecret:      envOrFile("SPILLWAY_TS_CLIENT_SECRET", "SPILLWAY_TS_CLIENT_SECRET_FILE"),
+		TSIDToken:           envOrFile("SPILLWAY_TS_ID_TOKEN", "SPILLWAY_TS_ID_TOKEN_FILE"),
+		TSAudience:          envOrFile("SPILLWAY_TS_AUDIENCE", "SPILLWAY_TS_AUDIENCE_FILE"),
+		TSEphemeral:         os.Getenv("SPILLWAY_TS_EPHEMERAL") == "true",
 	}
 
 	portRange := envOrDefault("SPILLWAY_PORT_RANGE", "8000-9000")
@@ -79,6 +103,24 @@ func LoadClientConfig() *ClientConfig {
 	return &ClientConfig{
 		ServerAddr: envOrDefault("SPILLWAY_SERVER", "spillway:9090"),
 	}
+}
+
+// envOrFile returns the value of the env var named key if set and non-empty.
+// Otherwise, if the env var named fileKey is set, it reads the file at that path
+// and returns its contents with surrounding whitespace trimmed.
+// Returns "" if neither is set.
+func envOrFile(key, fileKey string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	if path := os.Getenv(fileKey); path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(data))
+	}
+	return ""
 }
 
 func envOrDefault(key, defaultVal string) string {

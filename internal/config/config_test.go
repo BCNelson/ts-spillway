@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,6 +16,12 @@ func TestLoadServerConfig_Defaults(t *testing.T) {
 		"SPILLWAY_ACME_EMAIL", "SPILLWAY_ACME_DIRECTORY", "SPILLWAY_TS_STATE_DIR",
 		"SPILLWAY_API_PORT", "SPILLWAY_HEARTBEAT_TTL",
 		"SPILLWAY_TS_HOSTNAME", "SPILLWAY_SERVICE_NAME",
+		"SPILLWAY_TS_AUTH_KEY", "SPILLWAY_TS_AUTH_KEY_FILE",
+		"SPILLWAY_TS_CLIENT_ID", "SPILLWAY_TS_CLIENT_ID_FILE",
+		"SPILLWAY_TS_CLIENT_SECRET", "SPILLWAY_TS_CLIENT_SECRET_FILE",
+		"SPILLWAY_TS_ID_TOKEN", "SPILLWAY_TS_ID_TOKEN_FILE",
+		"SPILLWAY_TS_AUDIENCE", "SPILLWAY_TS_AUDIENCE_FILE",
+		"SPILLWAY_TS_EPHEMERAL",
 	} {
 		t.Setenv(e, "")
 	}
@@ -32,6 +40,12 @@ func TestLoadServerConfig_Defaults(t *testing.T) {
 	assert.Equal(t, 90, cfg.HeartbeatTTL)
 	assert.Equal(t, "spillway", cfg.TSHostname)
 	assert.Equal(t, "svc:spillway", cfg.ServiceName)
+	assert.Equal(t, "", cfg.TSAuthKey)
+	assert.Equal(t, "", cfg.TSClientID)
+	assert.Equal(t, "", cfg.TSClientSecret)
+	assert.Equal(t, "", cfg.TSIDToken)
+	assert.Equal(t, "", cfg.TSAudience)
+	assert.False(t, cfg.TSEphemeral)
 }
 
 func TestLoadServerConfig_EnvOverrides(t *testing.T) {
@@ -43,6 +57,12 @@ func TestLoadServerConfig_EnvOverrides(t *testing.T) {
 	t.Setenv("SPILLWAY_HEARTBEAT_TTL", "120")
 	t.Setenv("SPILLWAY_TS_HOSTNAME", "spillway-2")
 	t.Setenv("SPILLWAY_SERVICE_NAME", "svc:my-spillway")
+	t.Setenv("SPILLWAY_TS_AUTH_KEY", "tskey-auth-test123")
+	t.Setenv("SPILLWAY_TS_CLIENT_ID", "oidc-client-id")
+	t.Setenv("SPILLWAY_TS_CLIENT_SECRET", "oidc-client-secret")
+	t.Setenv("SPILLWAY_TS_ID_TOKEN", "eyJhbGciOiJSUzI1NiJ9.test")
+	t.Setenv("SPILLWAY_TS_AUDIENCE", "https://login.tailscale.com")
+	t.Setenv("SPILLWAY_TS_EPHEMERAL", "true")
 
 	cfg, err := LoadServerConfig()
 	require.NoError(t, err)
@@ -56,6 +76,12 @@ func TestLoadServerConfig_EnvOverrides(t *testing.T) {
 	assert.Equal(t, 120, cfg.HeartbeatTTL)
 	assert.Equal(t, "spillway-2", cfg.TSHostname)
 	assert.Equal(t, "svc:my-spillway", cfg.ServiceName)
+	assert.Equal(t, "tskey-auth-test123", cfg.TSAuthKey)
+	assert.Equal(t, "oidc-client-id", cfg.TSClientID)
+	assert.Equal(t, "oidc-client-secret", cfg.TSClientSecret)
+	assert.Equal(t, "eyJhbGciOiJSUzI1NiJ9.test", cfg.TSIDToken)
+	assert.Equal(t, "https://login.tailscale.com", cfg.TSAudience)
+	assert.True(t, cfg.TSEphemeral)
 }
 
 func TestLoadServerConfig_InvalidPortRange(t *testing.T) {
@@ -75,6 +101,52 @@ func TestLoadClientConfig_EnvOverride(t *testing.T) {
 	t.Setenv("SPILLWAY_SERVER", "myserver:1234")
 	cfg := LoadClientConfig()
 	assert.Equal(t, "myserver:1234", cfg.ServerAddr)
+}
+
+func TestLoadServerConfig_FileBased(t *testing.T) {
+	// Clear direct env vars so only _FILE variants are active.
+	for _, e := range []string{
+		"SPILLWAY_TS_AUTH_KEY", "SPILLWAY_TS_CLIENT_ID",
+		"SPILLWAY_TS_CLIENT_SECRET", "SPILLWAY_TS_ID_TOKEN",
+		"SPILLWAY_TS_AUDIENCE", "SPILLWAY_TS_EPHEMERAL",
+	} {
+		t.Setenv(e, "")
+	}
+
+	// Write a credential to a temp file (with extra whitespace to verify trimming).
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "auth-key")
+	require.NoError(t, os.WriteFile(keyFile, []byte("  tskey-auth-from-file\n"), 0o600))
+
+	t.Setenv("SPILLWAY_TS_AUTH_KEY_FILE", keyFile)
+	// Clear other _FILE vars to isolate.
+	for _, e := range []string{
+		"SPILLWAY_TS_CLIENT_ID_FILE", "SPILLWAY_TS_CLIENT_SECRET_FILE",
+		"SPILLWAY_TS_ID_TOKEN_FILE", "SPILLWAY_TS_AUDIENCE_FILE",
+	} {
+		t.Setenv(e, "")
+	}
+
+	cfg, err := LoadServerConfig()
+	require.NoError(t, err)
+
+	assert.Equal(t, "tskey-auth-from-file", cfg.TSAuthKey)
+}
+
+func TestLoadServerConfig_EnvTakesPriorityOverFile(t *testing.T) {
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "auth-key")
+	require.NoError(t, os.WriteFile(keyFile, []byte("from-file"), 0o600))
+
+	// Set both the direct env var and the _FILE var.
+	t.Setenv("SPILLWAY_TS_AUTH_KEY", "from-env")
+	t.Setenv("SPILLWAY_TS_AUTH_KEY_FILE", keyFile)
+
+	cfg, err := LoadServerConfig()
+	require.NoError(t, err)
+
+	// Direct env var should win.
+	assert.Equal(t, "from-env", cfg.TSAuthKey)
 }
 
 func TestParsePortRange(t *testing.T) {

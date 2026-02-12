@@ -80,6 +80,41 @@ func (s *Server) Start(ctx context.Context) error {
 		Hostname: s.cfg.TSHostname,
 		Dir:      s.cfg.TSStateDir,
 	}
+
+	// Apply Tailscale authentication from config (env vars / file-based secrets).
+	// Non-empty fields override tsnet defaults; when left empty, tsnet's native
+	// TS_* env var fallback still applies.
+	if s.cfg.TSAuthKey != "" {
+		s.tsServer.AuthKey = s.cfg.TSAuthKey
+	}
+	if s.cfg.TSClientID != "" {
+		s.tsServer.ClientID = s.cfg.TSClientID
+	}
+	if s.cfg.TSClientSecret != "" {
+		s.tsServer.ClientSecret = s.cfg.TSClientSecret
+	}
+	if s.cfg.TSIDToken != "" {
+		s.tsServer.IDToken = s.cfg.TSIDToken
+	}
+	if s.cfg.TSAudience != "" {
+		s.tsServer.Audience = s.cfg.TSAudience
+	}
+	if s.cfg.TSEphemeral {
+		s.tsServer.Ephemeral = true
+	}
+
+	// Log which auth method is configured (without revealing secrets).
+	switch {
+	case s.cfg.TSAuthKey != "":
+		s.logger.Info("tailscale auth configured", "method", "auth_key")
+	case s.cfg.TSClientID != "" && s.cfg.TSClientSecret != "":
+		s.logger.Info("tailscale auth configured", "method", "oauth_client")
+	case s.cfg.TSClientID != "" && (s.cfg.TSIDToken != "" || s.cfg.TSAudience != ""):
+		s.logger.Info("tailscale auth configured", "method", "workload_identity")
+	default:
+		s.logger.Info("tailscale auth configured", "method", "default (persisted state or TS_* env vars)")
+	}
+
 	if s.tsOverrides != nil {
 		s.tsServer.ControlURL = s.tsOverrides.ControlURL
 		if s.tsOverrides.Store != nil {
