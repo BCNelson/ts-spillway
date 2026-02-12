@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -597,6 +598,50 @@ func TestIntegration_ProxyToUnregisteredHost(t *testing.T) {
 	resp := env.proxyGet(t, host, "/")
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// --- Cert TTL refresh ---
+
+func TestIntegration_RefreshCertTTLs(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	regStore := registry.NewRedisStore(client, 90*time.Second)
+	certStore := certmanager.NewRedisCertStore(client)
+
+	cfg := &config.ServerConfig{BaseDomain: baseDomain}
+	logger := slog.Default()
+	certMgr := certmanager.NewManager(certStore, &noopCertIssuer{}, logger)
+	rtr := router.NewRouter(baseDomain)
+	proxyHandler := proxy.NewProxy(regStore, rtr, logger)
+
+	srv := &Server{
+		cfg:          cfg,
+		store:        regStore,
+		certMgr:      certMgr,
+		proxyHandler: proxyHandler,
+		logger:       logger,
+	}
+
+	ctx := context.Background()
+
+	// Register a port so machine_regs:alice:laptop has an entry
+	require.NoError(t, regStore.Register(ctx, "alice", "laptop", 8080, "100.64.0.1"))
+
+	// Save a cert for the machine wildcard
+	domain := certmanager.MachineWildcard("alice", "laptop", baseDomain)
+	require.NoError(t, certStore.SaveCert(ctx, domain, []byte("cert"), []byte("key"), time.Now().Add(90*24*time.Hour)))
+
+	// Fast-forward 7 days so TTL drops
+	mr.FastForward(7 * 24 * time.Hour)
+	ttlBefore := mr.TTL("cert:" + domain)
+	assert.InDelta(t, (7 * 24 * time.Hour).Seconds(), ttlBefore.Seconds(), 5)
+
+	// Call refreshCertTTLs
+	srv.refreshCertTTLs(ctx)
+
+	// TTL should be back to ~14 days
+	ttlAfter := mr.TTL("cert:" + domain)
+	assert.InDelta(t, (14 * 24 * time.Hour).Seconds(), ttlAfter.Seconds(), 5)
 }
 
 // --- Multi-port registration ---

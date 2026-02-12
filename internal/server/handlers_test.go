@@ -30,13 +30,14 @@ func (m *mockIdentifier) Identify(r *http.Request) (*auth.Identity, error) {
 }
 
 type mockStore struct {
-	registerFn         func(ctx context.Context, user, machine string, port int, tailscaleIP string) error
-	deregisterFn       func(ctx context.Context, user, machine string, port int) error
-	refreshHeartbeatFn func(ctx context.Context, user, machine string, ports []int) error
-	lookupFn           func(ctx context.Context, user, machine string, port int) (string, error)
-	listByMachineFn    func(ctx context.Context, user, machine string) ([]registry.Registration, error)
-	saveUserFn         func(ctx context.Context, tailscaleID, loginName, displayName string) error
-	saveMachineFn      func(ctx context.Context, user, machineName, tailscaleIP string) error
+	registerFn           func(ctx context.Context, user, machine string, port int, tailscaleIP string) error
+	deregisterFn         func(ctx context.Context, user, machine string, port int) error
+	refreshHeartbeatFn   func(ctx context.Context, user, machine string, ports []int) error
+	lookupFn             func(ctx context.Context, user, machine string, port int) (string, error)
+	listByMachineFn      func(ctx context.Context, user, machine string) ([]registry.Registration, error)
+	listActiveMachinesFn func(ctx context.Context) ([]registry.MachineRef, error)
+	saveUserFn           func(ctx context.Context, tailscaleID, loginName, displayName string) error
+	saveMachineFn        func(ctx context.Context, user, machineName, tailscaleIP string) error
 }
 
 func (m *mockStore) Register(ctx context.Context, user, machine string, port int, ip string) error {
@@ -66,6 +67,12 @@ func (m *mockStore) Lookup(ctx context.Context, user, machine string, port int) 
 func (m *mockStore) ListByMachine(ctx context.Context, user, machine string) ([]registry.Registration, error) {
 	if m.listByMachineFn != nil {
 		return m.listByMachineFn(ctx, user, machine)
+	}
+	return nil, nil
+}
+func (m *mockStore) ListActiveMachines(ctx context.Context) ([]registry.MachineRef, error) {
+	if m.listActiveMachinesFn != nil {
+		return m.listActiveMachinesFn(ctx)
 	}
 	return nil, nil
 }
@@ -120,6 +127,9 @@ func (n *noopCertStore) SaveCert(context.Context, string, []byte, []byte, time.T
 }
 func (n *noopCertStore) ListExpiring(context.Context, time.Time) ([]string, error) {
 	return nil, nil
+}
+func (n *noopCertStore) RefreshCertTTL(context.Context, string, time.Duration) error {
+	return nil
 }
 
 // noopCertIssuer satisfies certmanager.CertIssuer for handler tests.

@@ -16,9 +16,10 @@ import (
 // --- local mocks (no external project imports needed) ---
 
 type mockCertStore struct {
-	getCertFn      func(ctx context.Context, domain string) (*StoredCert, error)
-	saveCertFn     func(ctx context.Context, domain string, certPEM, keyPEM []byte, notAfter time.Time) error
-	listExpiringFn func(ctx context.Context, before time.Time) ([]string, error)
+	getCertFn        func(ctx context.Context, domain string) (*StoredCert, error)
+	saveCertFn       func(ctx context.Context, domain string, certPEM, keyPEM []byte, notAfter time.Time) error
+	listExpiringFn   func(ctx context.Context, before time.Time) ([]string, error)
+	refreshCertTTLFn func(ctx context.Context, domain string, ttl time.Duration) error
 }
 
 func (m *mockCertStore) GetCert(ctx context.Context, domain string) (*StoredCert, error) {
@@ -38,6 +39,12 @@ func (m *mockCertStore) ListExpiring(ctx context.Context, before time.Time) ([]s
 		return m.listExpiringFn(ctx, before)
 	}
 	return nil, nil
+}
+func (m *mockCertStore) RefreshCertTTL(ctx context.Context, domain string, ttl time.Duration) error {
+	if m.refreshCertTTLFn != nil {
+		return m.refreshCertTTLFn(ctx, domain, ttl)
+	}
+	return nil
 }
 
 type mockCertIssuer struct {
@@ -229,6 +236,29 @@ func TestEnsureCert_IssueError(t *testing.T) {
 	err := mgr.EnsureCert(context.Background(), "*.test.example.com")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "issuing cert")
+}
+
+func TestMachineWildcard(t *testing.T) {
+	assert.Equal(t, "*.mymachine.alice.spillway.redo.run", MachineWildcard("alice", "mymachine", "spillway.redo.run"))
+	assert.Equal(t, "*.laptop.bob.example.com", MachineWildcard("bob", "laptop", "example.com"))
+}
+
+func TestRefreshCertTTL(t *testing.T) {
+	var refreshedDomain string
+	var refreshedTTL time.Duration
+	store := &mockCertStore{
+		refreshCertTTLFn: func(_ context.Context, domain string, ttl time.Duration) error {
+			refreshedDomain = domain
+			refreshedTTL = ttl
+			return nil
+		},
+	}
+
+	mgr := NewManager(store, &mockCertIssuer{}, slog.Default())
+	mgr.RefreshCertTTL(context.Background(), "*.test.example.com")
+
+	assert.Equal(t, "*.test.example.com", refreshedDomain)
+	assert.Equal(t, 14*24*time.Hour, refreshedTTL)
 }
 
 func TestRenewExpiring(t *testing.T) {

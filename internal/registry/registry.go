@@ -14,6 +14,12 @@ type Registration struct {
 	ExpiresAt   time.Time
 }
 
+// MachineRef identifies a user/machine pair.
+type MachineRef struct {
+	User    string
+	Machine string
+}
+
 // Store defines the interface for managing port registrations.
 type Store interface {
 	// Register records that a user's machine is exposing a port.
@@ -30,6 +36,9 @@ type Store interface {
 
 	// ListByMachine returns all active registrations for a user's machine.
 	ListByMachine(ctx context.Context, user, machine string) ([]Registration, error)
+
+	// ListActiveMachines returns all user/machine pairs that have active registrations.
+	ListActiveMachines(ctx context.Context) ([]MachineRef, error)
 
 	// SaveUser persists user profile information.
 	SaveUser(ctx context.Context, tailscaleID, loginName, displayName string) error
