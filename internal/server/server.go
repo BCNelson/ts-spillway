@@ -17,6 +17,7 @@ import (
 	"github.com/bcnelson/ts-spillway/internal/registry"
 	"github.com/bcnelson/ts-spillway/internal/router"
 
+	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
 )
 
@@ -26,12 +27,21 @@ type Identifier interface {
 	Identify(r *http.Request) (*auth.Identity, error)
 }
 
+// TSOverrides allows overriding tsnet.Server fields for testing.
+// When nil (production), the default tsnet behavior is used.
+type TSOverrides struct {
+	ControlURL string
+	Store      ipn.StateStore
+	Ephemeral  bool
+}
+
 // Server is the main spillway server.
 type Server struct {
 	cfg          *config.ServerConfig
 	store        registry.Store
 	certMgr      *certmanager.Manager
 	tsServer     *tsnet.Server
+	tsOverrides  *TSOverrides
 	authn        Identifier
 	proxyHandler *proxy.Proxy
 	listeners    *ListenerManager
@@ -57,6 +67,11 @@ func New(
 	}
 }
 
+// WithTSOverrides sets tsnet overrides for testing.
+func (s *Server) WithTSOverrides(overrides *TSOverrides) {
+	s.tsOverrides = overrides
+}
+
 // Start initializes tsnet, starts listeners, and runs the server.
 func (s *Server) Start(ctx context.Context) error {
 	// Initialize tsnet
@@ -64,12 +79,24 @@ func (s *Server) Start(ctx context.Context) error {
 		Hostname: "spillway",
 		Dir:      s.cfg.TSStateDir,
 	}
+	if s.tsOverrides != nil {
+		s.tsServer.ControlURL = s.tsOverrides.ControlURL
+		if s.tsOverrides.Store != nil {
+			s.tsServer.Store = s.tsOverrides.Store
+		}
+		s.tsServer.Ephemeral = s.tsOverrides.Ephemeral
+	}
 
 	status, err := s.tsServer.Up(ctx)
 	if err != nil {
 		return fmt.Errorf("tsnet startup failed: %w", err)
 	}
 	s.logger.Info("tsnet connected", "tailscale_ips", status.TailscaleIPs)
+
+	// Configure proxy to dial backends through the Tailscale network
+	s.proxyHandler.SetTransport(&http.Transport{
+		DialContext: s.tsServer.Dial,
+	})
 
 	lc, err := s.tsServer.LocalClient()
 	if err != nil {
@@ -313,6 +340,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, statusResponse{Registrations: infos})
+}
+
+// ProxyHandler returns the proxy HTTP handler. Useful for testing proxy forwarding.
+func (s *Server) ProxyHandler() http.Handler {
+	return s.proxyHandler
 }
 
 // TSListener returns a net.Listener from the tsnet server. Useful for testing.

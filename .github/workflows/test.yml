@@ -27,6 +27,18 @@ jobs:
           go test -coverprofile=coverage.out ./...
           go tool cover -func=coverage.out
 
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: E2E Tests
+        run: go test -tags e2e -race -count=1 -timeout 10m -v ./e2e/
+
   lint:
     runs-on: ubuntu-latest
     steps:

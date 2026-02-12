@@ -48,7 +48,7 @@ func main() {
 	var certIssuer certmanager.CertIssuer
 
 	if cfg.ACMEEmail != "" {
-		issuer, err := certmanager.NewACMEIssuer(cfg.ACMEEmail, cfg.ACMEDirectory)
+		issuer, err := certmanager.NewACMEIssuer(cfg.ACMEEmail, cfg.ACMEDirectory, nil)
 		if err != nil {
 			logger.Error("failed to create ACME issuer", "error", err)
 			os.Exit(1)
