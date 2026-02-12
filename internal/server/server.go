@@ -142,12 +142,46 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start cert renewal loop
 	s.certMgr.StartRenewalLoop(ctx)
 
+	// Start daily cert TTL refresh loop
+	s.startCertTTLRefreshLoop(ctx)
+
 	s.logger.Info("spillway server started",
 		"base_domain", s.cfg.BaseDomain,
 		"port_range", fmt.Sprintf("%d-%d", s.cfg.PortRangeStart, s.cfg.PortRangeEnd),
 	)
 
 	return nil
+}
+
+// startCertTTLRefreshLoop runs a daily goroutine that refreshes TTLs
+// for certs belonging to currently registered machines.
+func (s *Server) startCertTTLRefreshLoop(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.refreshCertTTLs(ctx)
+			}
+		}
+	}()
+}
+
+// refreshCertTTLs resets the 14-day TTL on certs for all active machines.
+func (s *Server) refreshCertTTLs(ctx context.Context) {
+	machines, err := s.store.ListActiveMachines(ctx)
+	if err != nil {
+		s.logger.Error("failed to list active machines for cert TTL refresh", "error", err)
+		return
+	}
+	for _, m := range machines {
+		domain := certmanager.MachineWildcard(m.User, m.Machine, s.cfg.BaseDomain)
+		s.certMgr.RefreshCertTTL(ctx, domain)
+	}
 }
 
 // Close shuts down the server.

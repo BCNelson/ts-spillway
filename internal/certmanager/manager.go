@@ -15,6 +15,7 @@ type CertStore interface {
 	GetCert(ctx context.Context, domain string) (*StoredCert, error)
 	SaveCert(ctx context.Context, domain string, certPEM, keyPEM []byte, notAfter time.Time) error
 	ListExpiring(ctx context.Context, before time.Time) ([]string, error)
+	RefreshCertTTL(ctx context.Context, domain string, ttl time.Duration) error
 }
 
 // StoredCert is a certificate retrieved from the store.
@@ -167,6 +168,21 @@ func (m *Manager) renewExpiring(ctx context.Context) {
 			m.logger.Error("failed to renew cert", "domain", domain, "error", err)
 		}
 	}
+}
+
+// certTTL is the TTL applied to cert keys in Redis.
+const certTTL = 14 * 24 * time.Hour
+
+// RefreshCertTTL resets the TTL for a cert key without rewriting the value.
+func (m *Manager) RefreshCertTTL(ctx context.Context, domain string) {
+	if err := m.store.RefreshCertTTL(ctx, domain, certTTL); err != nil {
+		m.logger.Error("failed to refresh cert TTL", "domain", domain, "error", err)
+	}
+}
+
+// MachineWildcard returns the machine-specific wildcard domain.
+func MachineWildcard(user, machine, baseDomain string) string {
+	return fmt.Sprintf("*.%s.%s.%s", machine, user, baseDomain)
 }
 
 // WildcardsForRegistration returns the wildcard domains needed for a user/machine registration.

@@ -145,6 +145,53 @@ func TestSaveMachine(t *testing.T) {
 	assert.Equal(t, "100.64.0.1", val)
 }
 
+func TestListActiveMachines(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	// Register ports for two machines
+	require.NoError(t, store.Register(ctx, "alice", "laptop", 8080, "100.64.0.1"))
+	require.NoError(t, store.Register(ctx, "bob", "desktop", 9090, "100.64.0.2"))
+
+	machines, err := store.ListActiveMachines(ctx)
+	require.NoError(t, err)
+	assert.Len(t, machines, 2)
+
+	refs := map[string]bool{}
+	for _, m := range machines {
+		refs[m.User+":"+m.Machine] = true
+	}
+	assert.True(t, refs["alice:laptop"])
+	assert.True(t, refs["bob:desktop"])
+}
+
+func TestListActiveMachines_ExcludesEmptySets(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	// Register then deregister — set should become empty
+	require.NoError(t, store.Register(ctx, "alice", "laptop", 8080, "100.64.0.1"))
+	require.NoError(t, store.Deregister(ctx, "alice", "laptop", 8080))
+
+	// Register another machine that stays active
+	require.NoError(t, store.Register(ctx, "bob", "desktop", 9090, "100.64.0.2"))
+
+	machines, err := store.ListActiveMachines(ctx)
+	require.NoError(t, err)
+	assert.Len(t, machines, 1)
+	assert.Equal(t, "bob", machines[0].User)
+	assert.Equal(t, "desktop", machines[0].Machine)
+}
+
+func TestListActiveMachines_Empty(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	machines, err := store.ListActiveMachines(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, machines)
+}
+
 func TestKeyFormat(t *testing.T) {
 	store, mr := newTestStore(t)
 	ctx := context.Background()

@@ -91,3 +91,46 @@ func TestRedisCertStore_ListExpiring_Empty(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, expiring)
 }
+
+func TestRedisCertStore_SaveCert_Sets14DayTTL(t *testing.T) {
+	store, mr := newTestCertStore(t)
+	ctx := context.Background()
+
+	certPEM, keyPEM, err := testutil.GenerateSelfSignedCert("*.test.example.com", time.Now().Add(90*24*time.Hour))
+	require.NoError(t, err)
+	require.NoError(t, store.SaveCert(ctx, "*.test.example.com", certPEM, keyPEM, time.Now().Add(90*24*time.Hour)))
+
+	ttl := mr.TTL("cert:*.test.example.com")
+	assert.InDelta(t, (14 * 24 * time.Hour).Seconds(), ttl.Seconds(), 5)
+}
+
+func TestRedisCertStore_RefreshCertTTL(t *testing.T) {
+	store, mr := newTestCertStore(t)
+	ctx := context.Background()
+
+	certPEM, keyPEM, err := testutil.GenerateSelfSignedCert("*.test.example.com", time.Now().Add(90*24*time.Hour))
+	require.NoError(t, err)
+	require.NoError(t, store.SaveCert(ctx, "*.test.example.com", certPEM, keyPEM, time.Now().Add(90*24*time.Hour)))
+
+	// Advance time by 7 days
+	mr.FastForward(7 * 24 * time.Hour)
+
+	// TTL should be ~7 days now
+	ttlBefore := mr.TTL("cert:*.test.example.com")
+	assert.InDelta(t, (7 * 24 * time.Hour).Seconds(), ttlBefore.Seconds(), 5)
+
+	// Refresh TTL back to 14 days
+	require.NoError(t, store.RefreshCertTTL(ctx, "*.test.example.com", 14*24*time.Hour))
+
+	ttlAfter := mr.TTL("cert:*.test.example.com")
+	assert.InDelta(t, (14 * 24 * time.Hour).Seconds(), ttlAfter.Seconds(), 5)
+}
+
+func TestRedisCertStore_RefreshCertTTL_NonexistentKey(t *testing.T) {
+	store, _ := newTestCertStore(t)
+	ctx := context.Background()
+
+	// Should not error — EXPIRE on nonexistent key returns false, not an error
+	err := store.RefreshCertTTL(ctx, "*.nonexistent.example.com", 14*24*time.Hour)
+	require.NoError(t, err)
+}

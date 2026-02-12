@@ -33,6 +33,9 @@ func (m *mockStore) Lookup(ctx context.Context, user, machine string, port int) 
 func (m *mockStore) ListByMachine(context.Context, string, string) ([]registry.Registration, error) {
 	return nil, nil
 }
+func (m *mockStore) ListActiveMachines(context.Context) ([]registry.MachineRef, error) {
+	return nil, nil
+}
 func (m *mockStore) SaveUser(context.Context, string, string, string) error    { return nil }
 func (m *mockStore) SaveMachine(context.Context, string, string, string) error { return nil }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -134,6 +135,36 @@ func (s *RedisStore) SaveUser(ctx context.Context, tailscaleID, loginName, displ
 		return err
 	}
 	return s.client.Set(ctx, userKey(tailscaleID), data, 0).Err()
+}
+
+func (s *RedisStore) ListActiveMachines(ctx context.Context) ([]MachineRef, error) {
+	var machines []MachineRef
+
+	iter := s.client.Scan(ctx, 0, "machine_regs:*", 100).Iterator()
+	for iter.Next(ctx) {
+		key := iter.Val()
+		// Key format: machine_regs:{user}:{machine}
+		parts := strings.SplitN(key, ":", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		user := parts[1]
+		machine := parts[2]
+
+		// Only include machines with active registrations
+		count, err := s.client.SCard(ctx, key).Result()
+		if err != nil {
+			continue
+		}
+		if count > 0 {
+			machines = append(machines, MachineRef{User: user, Machine: machine})
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return nil, err
+	}
+
+	return machines, nil
 }
 
 func (s *RedisStore) SaveMachine(ctx context.Context, user, machineName, tailscaleIP string) error {

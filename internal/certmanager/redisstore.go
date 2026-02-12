@@ -60,8 +60,13 @@ func (s *RedisCertStore) SaveCert(ctx context.Context, domain string, certPEM, k
 		return err
 	}
 
-	// No TTL — certs persist indefinitely, managed by renewal loop
-	return s.client.Set(ctx, certKey(domain), data, 0).Err()
+	// 14-day TTL — daily refresh job resets TTL for active machines' certs.
+	// Certs for deregistered machines naturally expire.
+	return s.client.Set(ctx, certKey(domain), data, 14*24*time.Hour).Err()
+}
+
+func (s *RedisCertStore) RefreshCertTTL(ctx context.Context, domain string, ttl time.Duration) error {
+	return s.client.Expire(ctx, certKey(domain), ttl).Err()
 }
 
 func (s *RedisCertStore) ListExpiring(ctx context.Context, before time.Time) ([]string, error) {
