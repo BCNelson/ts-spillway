@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1
+
+# ── Builder ──────────────────────────────────────────────────────────────────
+FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS builder
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -ldflags="-s -w" -o /out/spillway-server ./cmd/spillway-server
+
+# ── Runtime ──────────────────────────────────────────────────────────────────
+FROM alpine:3
+
+RUN apk add --no-cache ca-certificates \
+    && adduser -D -H -u 65532 spillway
+
+COPY --from=builder /out/spillway-server /usr/local/bin/spillway-server
+
+USER spillway
+
+ENV SPILLWAY_TS_STATE_DIR=/var/lib/spillway/tsnet
+VOLUME ["/var/lib/spillway/tsnet"]
+
+EXPOSE 443 8000-9000
+
+ENTRYPOINT ["spillway-server"]

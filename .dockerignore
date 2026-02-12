@@ -1,0 +1,17 @@
+.devenv/
+.direnv/
+.git/
+.github/
+.claude/
+bin/
+e2e/
+*.md
+LICENSE
+flake.nix
+flake.lock
+devenv.nix
+.envrc
+.pre-commit-config.yaml
+.gitignore
+coverage.out
+tsnet-spillway/
