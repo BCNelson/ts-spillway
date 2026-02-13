@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -13,6 +14,7 @@ type Route struct {
 	User    string
 	Machine string
 	Port    int
+	Alias   string // Non-empty when the request used an alias instead of a port number
 }
 
 // Router parses incoming requests to determine the target user, machine, and port.
@@ -33,6 +35,7 @@ func NewRouter(baseDomain string) *Router {
 // ParseRequest extracts routing information from the HTTP request.
 // Supports two patterns:
 //   - Subdomain: 8000.machine.user.spillway.redo.run (port in first label)
+//   - Alias subdomain: myapp.machine.user.spillway.redo.run (alias in first label)
 //   - Port-based: machine.user.spillway.redo.run:8000 (port from Host header port or listener port)
 func (r *Router) ParseRequest(req *http.Request) (*Route, error) {
 	return r.ParseHost(req.Host)
@@ -59,10 +62,19 @@ func (r *Router) ParseHost(host string) (*Route, error) {
 
 	switch len(labels) {
 	case 3:
-		// Subdomain format: port.machine.user
+		// Subdomain format: port.machine.user OR alias.machine.user
 		port, err := strconv.Atoi(labels[0])
 		if err != nil {
-			return nil, fmt.Errorf("invalid port label %q: %w", labels[0], err)
+			// Not a number — treat as alias if it's a valid alias label
+			alias := labels[0]
+			if err := ValidateAlias(alias); err != nil {
+				return nil, fmt.Errorf("invalid alias label %q: %w", alias, err)
+			}
+			return &Route{
+				User:    labels[2],
+				Machine: labels[1],
+				Alias:   alias,
+			}, nil
 		}
 		return &Route{
 			User:    labels[2],
@@ -88,4 +100,27 @@ func (r *Router) ParseHost(host string) (*Route, error) {
 	default:
 		return nil, fmt.Errorf("unexpected number of labels (%d) in host %q", len(labels), hostname)
 	}
+}
+
+// aliasRegexp matches a valid DNS label that does NOT start with a digit:
+// lowercase alphanumeric + hyphens, 1-63 chars, must not start or end with hyphen.
+var aliasRegexp = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+
+// ValidateAlias checks that an alias is a valid DNS label that does not start
+// with a digit (to disambiguate from port numbers). It must be lowercase
+// alphanumeric + hyphens, 1-63 chars, and must not end with a hyphen.
+func ValidateAlias(alias string) error {
+	if alias == "" {
+		return fmt.Errorf("alias must not be empty")
+	}
+	if len(alias) > 63 {
+		return fmt.Errorf("alias must be at most 63 characters")
+	}
+	if !aliasRegexp.MatchString(alias) {
+		return fmt.Errorf("alias must start with a letter and contain only lowercase alphanumeric characters and hyphens")
+	}
+	if strings.HasSuffix(alias, "-") {
+		return fmt.Errorf("alias must not end with a hyphen")
+	}
+	return nil
 }

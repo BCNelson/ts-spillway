@@ -208,3 +208,110 @@ func TestKeyFormat(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, members, "8080")
 }
+
+// --- Alias tests ---
+
+func TestRegisterAliasAndLookup(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.RegisterAlias(ctx, "alice", "laptop", "myapp", 8080))
+
+	port, err := store.LookupAlias(ctx, "alice", "laptop", "myapp")
+	require.NoError(t, err)
+	assert.Equal(t, 8080, port)
+}
+
+func TestLookupAlias_NotFound(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	port, err := store.LookupAlias(ctx, "alice", "laptop", "nonexistent")
+	require.NoError(t, err)
+	assert.Equal(t, 0, port)
+}
+
+func TestDeregisterAlias(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.RegisterAlias(ctx, "alice", "laptop", "myapp", 8080))
+	require.NoError(t, store.DeregisterAlias(ctx, "alice", "laptop", "myapp"))
+
+	port, err := store.LookupAlias(ctx, "alice", "laptop", "myapp")
+	require.NoError(t, err)
+	assert.Equal(t, 0, port)
+}
+
+func TestDeregisterAlias_AlreadyGone(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	// Should not error if alias doesn't exist
+	require.NoError(t, store.DeregisterAlias(ctx, "alice", "laptop", "nonexistent"))
+}
+
+func TestRefreshAliasHeartbeat(t *testing.T) {
+	store, mr := newTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.RegisterAlias(ctx, "alice", "laptop", "myapp", 8080))
+
+	// Fast-forward close to expiry
+	mr.FastForward(80 * time.Second)
+
+	// Refresh should reset the TTL
+	require.NoError(t, store.RefreshAliasHeartbeat(ctx, "alice", "laptop", []string{"myapp"}))
+
+	// Fast-forward another 80 seconds — without refresh this would have expired
+	mr.FastForward(80 * time.Second)
+
+	port, err := store.LookupAlias(ctx, "alice", "laptop", "myapp")
+	require.NoError(t, err)
+	assert.Equal(t, 8080, port)
+}
+
+func TestAliasExpiration(t *testing.T) {
+	store, mr := newTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.RegisterAlias(ctx, "alice", "laptop", "myapp", 8080))
+
+	// Let it expire
+	mr.FastForward(91 * time.Second)
+
+	port, err := store.LookupAlias(ctx, "alice", "laptop", "myapp")
+	require.NoError(t, err)
+	assert.Equal(t, 0, port)
+}
+
+func TestAliasKeyFormat(t *testing.T) {
+	store, mr := newTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.RegisterAlias(ctx, "alice", "laptop", "myapp", 8080))
+
+	// Verify alias key format
+	val, err := mr.Get("alias:alice:laptop:myapp")
+	require.NoError(t, err)
+	assert.Equal(t, "8080", val)
+
+	// Verify alias set membership
+	members, err := mr.Members("machine_aliases:alice:laptop")
+	require.NoError(t, err)
+	assert.Contains(t, members, "myapp:8080")
+}
+
+func TestListByMachine_IncludesAlias(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.Register(ctx, "alice", "laptop", 8080, "100.64.0.1"))
+	require.NoError(t, store.RegisterAlias(ctx, "alice", "laptop", "myapp", 8080))
+
+	regs, err := store.ListByMachine(ctx, "alice", "laptop")
+	require.NoError(t, err)
+	require.Len(t, regs, 1)
+	assert.Equal(t, 8080, regs[0].Port)
+	assert.Equal(t, "myapp", regs[0].Alias)
+}

@@ -57,11 +57,41 @@ func main() {
 	}
 }
 
+// buildAliasMap filters the configured aliases to only include ports that are being registered.
+func buildAliasMap(allAliases map[int]string, ports []int) map[string]string {
+	if len(allAliases) == 0 {
+		return nil
+	}
+	portSet := make(map[int]bool, len(ports))
+	for _, p := range ports {
+		portSet[p] = true
+	}
+	aliases := make(map[string]string)
+	for port, alias := range allAliases {
+		if portSet[port] {
+			if err := config.ValidateAlias(alias); err != nil {
+				slog.Warn("skipping invalid alias", "port", port, "alias", alias, "error", err)
+				continue
+			}
+			aliases[strconv.Itoa(port)] = alias
+		}
+	}
+	if len(aliases) == 0 {
+		return nil
+	}
+	return aliases
+}
+
 func runStart(cfg *config.ClientConfig, ports []int) error {
 	baseURL := fmt.Sprintf("http://%s", cfg.ServerAddr)
+	aliases := buildAliasMap(cfg.Aliases, ports)
 
 	// Register
-	body, _ := json.Marshal(map[string]any{"ports": ports})
+	reqBody := map[string]any{"ports": ports}
+	if aliases != nil {
+		reqBody["aliases"] = aliases
+	}
+	body, _ := json.Marshal(reqBody)
 	resp, err := http.Post(baseURL+"/api/v1/register", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to register: %w", err)
@@ -96,8 +126,12 @@ func runStart(cfg *config.ClientConfig, ports []int) error {
 	for {
 		select {
 		case <-ticker.C:
-			hbBody, _ := json.Marshal(map[string]any{"ports": ports})
-			hbResp, err := http.Post(baseURL+"/api/v1/heartbeat", "application/json", bytes.NewReader(hbBody))
+			hbBody := map[string]any{"ports": ports}
+			if aliases != nil {
+				hbBody["aliases"] = aliases
+			}
+			hbData, _ := json.Marshal(hbBody)
+			hbResp, err := http.Post(baseURL+"/api/v1/heartbeat", "application/json", bytes.NewReader(hbData))
 			if err != nil {
 				slog.Error("heartbeat failed", "error", err)
 				continue
@@ -109,8 +143,12 @@ func runStart(cfg *config.ClientConfig, ports []int) error {
 
 		case sig := <-sigCh:
 			fmt.Printf("\nReceived %s, deregistering...\n", sig)
-			deregBody, _ := json.Marshal(map[string]any{"ports": ports})
-			deregResp, err := http.Post(baseURL+"/api/v1/deregister", "application/json", bytes.NewReader(deregBody))
+			deregBody := map[string]any{"ports": ports}
+			if aliases != nil {
+				deregBody["aliases"] = aliases
+			}
+			deregData, _ := json.Marshal(deregBody)
+			deregResp, err := http.Post(baseURL+"/api/v1/deregister", "application/json", bytes.NewReader(deregData))
 			if err != nil {
 				slog.Error("deregistration failed", "error", err)
 				return nil
@@ -139,6 +177,7 @@ func runStatus(cfg *config.ClientConfig) error {
 			Port      int       `json:"port"`
 			URLs      []string  `json:"urls"`
 			ExpiresAt time.Time `json:"expires_at"`
+			Alias     string    `json:"alias,omitempty"`
 		} `json:"registrations"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
@@ -152,7 +191,11 @@ func runStatus(cfg *config.ClientConfig) error {
 
 	fmt.Println("Active registrations:")
 	for _, reg := range statusResp.Registrations {
-		fmt.Printf("  Port %d (expires %s):\n", reg.Port, reg.ExpiresAt.Format(time.RFC3339))
+		if reg.Alias != "" {
+			fmt.Printf("  Port %d [alias: %s] (expires %s):\n", reg.Port, reg.Alias, reg.ExpiresAt.Format(time.RFC3339))
+		} else {
+			fmt.Printf("  Port %d (expires %s):\n", reg.Port, reg.ExpiresAt.Format(time.RFC3339))
+		}
 		for _, u := range reg.URLs {
 			fmt.Printf("    %s\n", u)
 		}

@@ -22,6 +22,7 @@ func TestLoadServerConfig_Defaults(t *testing.T) {
 		"SPILLWAY_TS_ID_TOKEN", "SPILLWAY_TS_ID_TOKEN_FILE",
 		"SPILLWAY_TS_AUDIENCE", "SPILLWAY_TS_AUDIENCE_FILE",
 		"SPILLWAY_TS_EPHEMERAL",
+		"SPILLWAY_USERNAME_FORMAT",
 	} {
 		t.Setenv(e, "")
 	}
@@ -46,6 +47,7 @@ func TestLoadServerConfig_Defaults(t *testing.T) {
 	assert.Equal(t, "", cfg.TSIDToken)
 	assert.Equal(t, "", cfg.TSAudience)
 	assert.False(t, cfg.TSEphemeral)
+	assert.Equal(t, "short", cfg.UsernameFormat)
 }
 
 func TestLoadServerConfig_EnvOverrides(t *testing.T) {
@@ -63,6 +65,7 @@ func TestLoadServerConfig_EnvOverrides(t *testing.T) {
 	t.Setenv("SPILLWAY_TS_ID_TOKEN", "eyJhbGciOiJSUzI1NiJ9.test")
 	t.Setenv("SPILLWAY_TS_AUDIENCE", "https://login.tailscale.com")
 	t.Setenv("SPILLWAY_TS_EPHEMERAL", "true")
+	t.Setenv("SPILLWAY_USERNAME_FORMAT", "full")
 
 	cfg, err := LoadServerConfig()
 	require.NoError(t, err)
@@ -82,6 +85,7 @@ func TestLoadServerConfig_EnvOverrides(t *testing.T) {
 	assert.Equal(t, "eyJhbGciOiJSUzI1NiJ9.test", cfg.TSIDToken)
 	assert.Equal(t, "https://login.tailscale.com", cfg.TSAudience)
 	assert.True(t, cfg.TSEphemeral)
+	assert.Equal(t, "full", cfg.UsernameFormat)
 }
 
 func TestLoadServerConfig_InvalidPortRange(t *testing.T) {
@@ -95,6 +99,7 @@ func TestLoadClientConfig_Defaults(t *testing.T) {
 
 	cfg := LoadClientConfig()
 	assert.Equal(t, "spillway:9090", cfg.ServerAddr)
+	assert.Nil(t, cfg.Aliases)
 }
 
 func TestLoadClientConfig_EnvOverride(t *testing.T) {
@@ -109,6 +114,7 @@ func TestLoadServerConfig_FileBased(t *testing.T) {
 		"SPILLWAY_TS_AUTH_KEY", "SPILLWAY_TS_CLIENT_ID",
 		"SPILLWAY_TS_CLIENT_SECRET", "SPILLWAY_TS_ID_TOKEN",
 		"SPILLWAY_TS_AUDIENCE", "SPILLWAY_TS_EPHEMERAL",
+		"SPILLWAY_USERNAME_FORMAT",
 	} {
 		t.Setenv(e, "")
 	}
@@ -175,6 +181,85 @@ func TestParsePortRange(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantStart, start)
 			assert.Equal(t, tt.wantEnd, end)
+		})
+	}
+}
+
+func TestLoadAliasConfig_FromFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "spillway.yaml")
+	require.NoError(t, os.WriteFile(cfgFile, []byte("aliases:\n  8080: myapp\n  3000: dashboard\n"), 0o644))
+
+	// Change to the temp dir so loadAliasConfig finds ./spillway.yaml
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	defer func() { _ = os.Chdir(origDir) }()
+
+	aliases := loadAliasConfig()
+	assert.Equal(t, "myapp", aliases[8080])
+	assert.Equal(t, "dashboard", aliases[3000])
+}
+
+func TestLoadAliasConfig_XDGPath(t *testing.T) {
+	dir := t.TempDir()
+	xdgDir := filepath.Join(dir, "spillway")
+	require.NoError(t, os.MkdirAll(xdgDir, 0o755))
+	cfgFile := filepath.Join(xdgDir, "config.yaml")
+	require.NoError(t, os.WriteFile(cfgFile, []byte("aliases:\n  9090: api\n"), 0o644))
+
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	// Change to a dir without spillway.yaml so XDG path is used
+	emptyDir := t.TempDir()
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(emptyDir))
+	defer func() { _ = os.Chdir(origDir) }()
+
+	aliases := loadAliasConfig()
+	assert.Equal(t, "api", aliases[9090])
+}
+
+func TestLoadAliasConfig_NoFile(t *testing.T) {
+	dir := t.TempDir()
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	defer func() { _ = os.Chdir(origDir) }()
+
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "nonexistent"))
+
+	aliases := loadAliasConfig()
+	assert.Nil(t, aliases)
+}
+
+func TestValidateAlias(t *testing.T) {
+	tests := []struct {
+		name    string
+		alias   string
+		wantErr bool
+	}{
+		{"valid simple", "myapp", false},
+		{"valid with hyphens", "my-cool-app", false},
+		{"valid with numbers", "app2", false},
+		{"valid single char", "a", false},
+		{"empty", "", true},
+		{"starts with digit", "1app", true},
+		{"starts with hyphen", "-app", true},
+		{"ends with hyphen", "app-", true},
+		{"uppercase", "MyApp", true},
+		{"has underscore", "my_app", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateAlias(tt.alias)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
 		})
 	}
 }
