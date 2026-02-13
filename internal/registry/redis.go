@@ -41,6 +41,14 @@ func machineKey(user, machineName string) string {
 	return fmt.Sprintf("machine:%s:%s", user, machineName)
 }
 
+func aliasKey(user, machine, alias string) string {
+	return fmt.Sprintf("alias:%s:%s:%s", user, machine, alias)
+}
+
+func machineAliasesKey(user, machine string) string {
+	return fmt.Sprintf("machine_aliases:%s:%s", user, machine)
+}
+
 func (s *RedisStore) Register(ctx context.Context, user, machine string, port int, tailscaleIP string) error {
 	pipe := s.client.Pipeline()
 
@@ -89,6 +97,25 @@ func (s *RedisStore) ListByMachine(ctx context.Context, user, machine string) ([
 		return nil, err
 	}
 
+	// Build a reverse map of port -> alias from the alias set
+	aliasMembers, err := s.client.SMembers(ctx, machineAliasesKey(user, machine)).Result()
+	if err != nil {
+		return nil, err
+	}
+	portAlias := make(map[int]string)
+	for _, member := range aliasMembers {
+		parts := strings.SplitN(member, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		alias := parts[0]
+		port, err := strconv.Atoi(parts[1])
+		if err != nil {
+			continue
+		}
+		portAlias[port] = alias
+	}
+
 	var regs []Registration
 	for _, portStr := range ports {
 		port, err := strconv.Atoi(portStr)
@@ -118,6 +145,7 @@ func (s *RedisStore) ListByMachine(ctx context.Context, user, machine string) ([
 			Port:        port,
 			TailscaleIP: ip,
 			ExpiresAt:   time.Now().Add(ttl),
+			Alias:       portAlias[port],
 		})
 	}
 
@@ -169,4 +197,64 @@ func (s *RedisStore) ListActiveMachines(ctx context.Context) ([]MachineRef, erro
 
 func (s *RedisStore) SaveMachine(ctx context.Context, user, machineName, tailscaleIP string) error {
 	return s.client.Set(ctx, machineKey(user, machineName), tailscaleIP, 0).Err()
+}
+
+// RegisterAlias maps an alias to a port for a user's machine.
+func (s *RedisStore) RegisterAlias(ctx context.Context, user, machine, alias string, port int) error {
+	pipe := s.client.Pipeline()
+
+	// Store alias -> port mapping with TTL
+	pipe.Set(ctx, aliasKey(user, machine, alias), strconv.Itoa(port), s.ttl)
+
+	// Track alias in the machine's alias set (alias:port pairs)
+	pipe.SAdd(ctx, machineAliasesKey(user, machine), fmt.Sprintf("%s:%d", alias, port))
+
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// DeregisterAlias removes an alias mapping.
+func (s *RedisStore) DeregisterAlias(ctx context.Context, user, machine, alias string) error {
+	// Look up the port for this alias first so we can clean the set
+	portStr, err := s.client.Get(ctx, aliasKey(user, machine, alias)).Result()
+	if err == redis.Nil {
+		return nil // Already gone
+	}
+	if err != nil {
+		return err
+	}
+
+	pipe := s.client.Pipeline()
+	pipe.Del(ctx, aliasKey(user, machine, alias))
+	pipe.SRem(ctx, machineAliasesKey(user, machine), fmt.Sprintf("%s:%s", alias, portStr))
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
+// LookupAlias returns the port for a given alias, or 0 if not found.
+func (s *RedisStore) LookupAlias(ctx context.Context, user, machine, alias string) (int, error) {
+	portStr, err := s.client.Get(ctx, aliasKey(user, machine, alias)).Result()
+	if err == redis.Nil {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid port value for alias %q: %w", alias, err)
+	}
+	return port, nil
+}
+
+// RefreshAliasHeartbeat extends the TTL on aliases for the given machine.
+func (s *RedisStore) RefreshAliasHeartbeat(ctx context.Context, user, machine string, aliases []string) error {
+	pipe := s.client.Pipeline()
+
+	for _, alias := range aliases {
+		pipe.Expire(ctx, aliasKey(user, machine, alias), s.ttl)
+	}
+
+	_, err := pipe.Exec(ctx)
+	return err
 }

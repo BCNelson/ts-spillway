@@ -44,6 +44,21 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If the route uses an alias, resolve it to a port number
+	if route.Alias != "" {
+		port, err := p.store.LookupAlias(r.Context(), route.User, route.Machine, route.Alias)
+		if err != nil {
+			p.logger.Error("alias lookup failed", "user", route.User, "machine", route.Machine, "alias", route.Alias, "error", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		if port == 0 {
+			http.Error(w, "Not found: no active alias registration", http.StatusNotFound)
+			return
+		}
+		route.Port = port
+	}
+
 	tailscaleIP, err := p.store.Lookup(r.Context(), route.User, route.Machine, route.Port)
 	if err != nil {
 		p.logger.Error("registry lookup failed", "user", route.User, "machine", route.Machine, "port", route.Port, "error", err)
@@ -85,6 +100,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"user", route.User,
 		"machine", route.Machine,
 		"port", route.Port,
+		"alias", route.Alias,
 		"target", target.String(),
 		"path", r.URL.Path,
 	)

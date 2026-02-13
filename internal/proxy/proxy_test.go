@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -16,7 +17,8 @@ import (
 
 // mockStore implements registry.Store for proxy tests.
 type mockStore struct {
-	lookupFn func(ctx context.Context, user, machine string, port int) (string, error)
+	lookupFn      func(ctx context.Context, user, machine string, port int) (string, error)
+	lookupAliasFn func(ctx context.Context, user, machine, alias string) (int, error)
 }
 
 func (m *mockStore) Register(context.Context, string, string, int, string) error { return nil }
@@ -38,6 +40,19 @@ func (m *mockStore) ListActiveMachines(context.Context) ([]registry.MachineRef, 
 }
 func (m *mockStore) SaveUser(context.Context, string, string, string) error    { return nil }
 func (m *mockStore) SaveMachine(context.Context, string, string, string) error { return nil }
+func (m *mockStore) RegisterAlias(context.Context, string, string, string, int) error {
+	return nil
+}
+func (m *mockStore) DeregisterAlias(context.Context, string, string, string) error { return nil }
+func (m *mockStore) LookupAlias(ctx context.Context, user, machine, alias string) (int, error) {
+	if m.lookupAliasFn != nil {
+		return m.lookupAliasFn(ctx, user, machine, alias)
+	}
+	return 0, nil
+}
+func (m *mockStore) RefreshAliasHeartbeat(context.Context, string, string, []string) error {
+	return nil
+}
 
 var _ registry.Store = (*mockStore)(nil)
 
@@ -172,6 +187,76 @@ func TestServeHTTP_BackendDown(t *testing.T) {
 	p.ServeHTTP(rr, req.WithContext(ctx))
 
 	assert.Equal(t, http.StatusBadGateway, rr.Code)
+}
+
+func TestServeHTTP_AliasResolution(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "hello via alias")
+	}))
+	defer backend.Close()
+
+	_, port, _ := splitHostPort(backend.Listener.Addr().String())
+	portNum, _ := strconv.Atoi(port)
+
+	store := &mockStore{
+		lookupAliasFn: func(_ context.Context, _, _, alias string) (int, error) {
+			if alias == "myapp" {
+				return portNum, nil
+			}
+			return 0, nil
+		},
+		lookupFn: func(_ context.Context, _, _ string, _ int) (string, error) {
+			return "127.0.0.1", nil
+		},
+	}
+
+	p := NewProxy(store, router.NewRouter("spillway.redo.run"), slog.Default())
+
+	req := httptest.NewRequest("GET", "/path", nil)
+	req.Host = "myapp.mymachine.alice.spillway.redo.run"
+
+	rr := httptest.NewRecorder()
+	p.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, "hello via alias", rr.Body.String())
+}
+
+func TestServeHTTP_AliasNotFound(t *testing.T) {
+	store := &mockStore{
+		lookupAliasFn: func(_ context.Context, _, _, _ string) (int, error) {
+			return 0, nil
+		},
+	}
+
+	p := NewProxy(store, router.NewRouter("spillway.redo.run"), slog.Default())
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Host = "myapp.mymachine.alice.spillway.redo.run"
+
+	rr := httptest.NewRecorder()
+	p.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusNotFound, rr.Code)
+}
+
+func TestServeHTTP_AliasLookupError(t *testing.T) {
+	store := &mockStore{
+		lookupAliasFn: func(_ context.Context, _, _, _ string) (int, error) {
+			return 0, fmt.Errorf("redis down")
+		},
+	}
+
+	p := NewProxy(store, router.NewRouter("spillway.redo.run"), slog.Default())
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Host = "myapp.mymachine.alice.spillway.redo.run"
+
+	rr := httptest.NewRecorder()
+	p.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
 }
 
 // splitHostPort is a small helper that splits "host:port".

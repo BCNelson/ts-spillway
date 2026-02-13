@@ -30,14 +30,18 @@ func (m *mockIdentifier) Identify(r *http.Request) (*auth.Identity, error) {
 }
 
 type mockStore struct {
-	registerFn           func(ctx context.Context, user, machine string, port int, tailscaleIP string) error
-	deregisterFn         func(ctx context.Context, user, machine string, port int) error
-	refreshHeartbeatFn   func(ctx context.Context, user, machine string, ports []int) error
-	lookupFn             func(ctx context.Context, user, machine string, port int) (string, error)
-	listByMachineFn      func(ctx context.Context, user, machine string) ([]registry.Registration, error)
-	listActiveMachinesFn func(ctx context.Context) ([]registry.MachineRef, error)
-	saveUserFn           func(ctx context.Context, tailscaleID, loginName, displayName string) error
-	saveMachineFn        func(ctx context.Context, user, machineName, tailscaleIP string) error
+	registerFn              func(ctx context.Context, user, machine string, port int, tailscaleIP string) error
+	deregisterFn            func(ctx context.Context, user, machine string, port int) error
+	refreshHeartbeatFn      func(ctx context.Context, user, machine string, ports []int) error
+	lookupFn                func(ctx context.Context, user, machine string, port int) (string, error)
+	listByMachineFn         func(ctx context.Context, user, machine string) ([]registry.Registration, error)
+	listActiveMachinesFn    func(ctx context.Context) ([]registry.MachineRef, error)
+	saveUserFn              func(ctx context.Context, tailscaleID, loginName, displayName string) error
+	saveMachineFn           func(ctx context.Context, user, machineName, tailscaleIP string) error
+	registerAliasFn         func(ctx context.Context, user, machine, alias string, port int) error
+	deregisterAliasFn       func(ctx context.Context, user, machine, alias string) error
+	lookupAliasFn           func(ctx context.Context, user, machine, alias string) (int, error)
+	refreshAliasHeartbeatFn func(ctx context.Context, user, machine string, aliases []string) error
 }
 
 func (m *mockStore) Register(ctx context.Context, user, machine string, port int, ip string) error {
@@ -85,6 +89,30 @@ func (m *mockStore) SaveUser(ctx context.Context, id, login, display string) err
 func (m *mockStore) SaveMachine(ctx context.Context, user, machine, ip string) error {
 	if m.saveMachineFn != nil {
 		return m.saveMachineFn(ctx, user, machine, ip)
+	}
+	return nil
+}
+func (m *mockStore) RegisterAlias(ctx context.Context, user, machine, alias string, port int) error {
+	if m.registerAliasFn != nil {
+		return m.registerAliasFn(ctx, user, machine, alias, port)
+	}
+	return nil
+}
+func (m *mockStore) DeregisterAlias(ctx context.Context, user, machine, alias string) error {
+	if m.deregisterAliasFn != nil {
+		return m.deregisterAliasFn(ctx, user, machine, alias)
+	}
+	return nil
+}
+func (m *mockStore) LookupAlias(ctx context.Context, user, machine, alias string) (int, error) {
+	if m.lookupAliasFn != nil {
+		return m.lookupAliasFn(ctx, user, machine, alias)
+	}
+	return 0, nil
+}
+func (m *mockStore) RefreshAliasHeartbeat(ctx context.Context, user, machine string, aliases []string) error {
+	if m.refreshAliasHeartbeatFn != nil {
+		return m.refreshAliasHeartbeatFn(ctx, user, machine, aliases)
 	}
 	return nil
 }
@@ -166,6 +194,45 @@ func TestHandleRegister_Success(t *testing.T) {
 	var resp registerResponse
 	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
 	assert.Len(t, resp.URLs, 4) // 2 ports × 2 URL formats
+}
+
+func TestHandleRegister_WithAliases(t *testing.T) {
+	var registered []int
+	var registeredAliases []string
+	store := &mockStore{
+		registerFn: func(_ context.Context, _, _ string, port int, _ string) error {
+			registered = append(registered, port)
+			return nil
+		},
+		registerAliasFn: func(_ context.Context, _, _, alias string, _ int) error {
+			registeredAliases = append(registeredAliases, alias)
+			return nil
+		},
+	}
+	authn := &mockIdentifier{identifyFn: func(_ *http.Request) (*auth.Identity, error) {
+		return testIdentity(), nil
+	}}
+
+	srv := newTestServer(authn, store)
+	body, _ := json.Marshal(registerRequest{
+		Ports:   []int{8080, 3000},
+		Aliases: map[string]string{"8080": "myapp", "3000": "dashboard"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/register", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+
+	srv.handleRegister(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, []int{8080, 3000}, registered)
+	assert.Len(t, registeredAliases, 2)
+	assert.Contains(t, registeredAliases, "myapp")
+	assert.Contains(t, registeredAliases, "dashboard")
+
+	var resp registerResponse
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+	// 2 ports × 2 URL formats + 2 alias URLs = 6
+	assert.Len(t, resp.URLs, 6)
 }
 
 func TestHandleRegister_MethodNotAllowed(t *testing.T) {
@@ -252,6 +319,38 @@ func TestHandleHeartbeat_Success(t *testing.T) {
 	assert.Equal(t, []int{8080, 8081}, refreshedPorts)
 }
 
+func TestHandleHeartbeat_WithAliases(t *testing.T) {
+	var refreshedPorts []int
+	var refreshedAliases []string
+	store := &mockStore{
+		refreshHeartbeatFn: func(_ context.Context, _, _ string, ports []int) error {
+			refreshedPorts = ports
+			return nil
+		},
+		refreshAliasHeartbeatFn: func(_ context.Context, _, _ string, aliases []string) error {
+			refreshedAliases = aliases
+			return nil
+		},
+	}
+	authn := &mockIdentifier{identifyFn: func(_ *http.Request) (*auth.Identity, error) {
+		return testIdentity(), nil
+	}}
+
+	srv := newTestServer(authn, store)
+	body, _ := json.Marshal(heartbeatRequest{
+		Ports:   []int{8080},
+		Aliases: map[string]string{"8080": "myapp"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/heartbeat", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+
+	srv.handleHeartbeat(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, []int{8080}, refreshedPorts)
+	assert.Equal(t, []string{"myapp"}, refreshedAliases)
+}
+
 func TestHandleHeartbeat_MethodNotAllowed(t *testing.T) {
 	srv := newTestServer(&mockIdentifier{}, &mockStore{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/heartbeat", nil)
@@ -322,6 +421,38 @@ func TestHandleDeregister_Success(t *testing.T) {
 	assert.Equal(t, []int{8080}, deregistered)
 }
 
+func TestHandleDeregister_WithAliases(t *testing.T) {
+	var deregistered []int
+	var deregisteredAliases []string
+	store := &mockStore{
+		deregisterFn: func(_ context.Context, _, _ string, port int) error {
+			deregistered = append(deregistered, port)
+			return nil
+		},
+		deregisterAliasFn: func(_ context.Context, _, _, alias string) error {
+			deregisteredAliases = append(deregisteredAliases, alias)
+			return nil
+		},
+	}
+	authn := &mockIdentifier{identifyFn: func(_ *http.Request) (*auth.Identity, error) {
+		return testIdentity(), nil
+	}}
+
+	srv := newTestServer(authn, store)
+	body, _ := json.Marshal(deregisterRequest{
+		Ports:   []int{8080},
+		Aliases: map[string]string{"8080": "myapp"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/deregister", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+
+	srv.handleDeregister(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, []int{8080}, deregistered)
+	assert.Equal(t, []string{"myapp"}, deregisteredAliases)
+}
+
 func TestHandleDeregister_MethodNotAllowed(t *testing.T) {
 	srv := newTestServer(&mockIdentifier{}, &mockStore{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/deregister", nil)
@@ -374,6 +505,34 @@ func TestHandleStatus_Success(t *testing.T) {
 	require.Len(t, resp.Registrations, 1)
 	assert.Equal(t, 8080, resp.Registrations[0].Port)
 	assert.Len(t, resp.Registrations[0].URLs, 2)
+	assert.Empty(t, resp.Registrations[0].Alias)
+}
+
+func TestHandleStatus_WithAlias(t *testing.T) {
+	store := &mockStore{
+		listByMachineFn: func(_ context.Context, _, _ string) ([]registry.Registration, error) {
+			return []registry.Registration{
+				{User: "alice", Machine: "laptop", Port: 8080, TailscaleIP: "100.64.0.1", ExpiresAt: time.Now().Add(60 * time.Second), Alias: "myapp"},
+			}, nil
+		},
+	}
+	authn := &mockIdentifier{identifyFn: func(_ *http.Request) (*auth.Identity, error) {
+		return testIdentity(), nil
+	}}
+
+	srv := newTestServer(authn, store)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
+	rr := httptest.NewRecorder()
+
+	srv.handleStatus(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var resp statusResponse
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+	require.Len(t, resp.Registrations, 1)
+	assert.Equal(t, "myapp", resp.Registrations[0].Alias)
+	assert.Len(t, resp.Registrations[0].URLs, 3) // 2 standard + 1 alias URL
 }
 
 func TestHandleStatus_MethodNotAllowed(t *testing.T) {

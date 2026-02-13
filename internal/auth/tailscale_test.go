@@ -58,6 +58,87 @@ func TestIdentify_Success(t *testing.T) {
 	assert.Equal(t, "100.64.0.5", id.TailscaleIP)
 }
 
+func TestIdentify_FullUsernameFormat(t *testing.T) {
+	mock := &mockWhoIser{
+		fn: func(_ context.Context, _ string) (*apitype.WhoIsResponse, error) {
+			return &apitype.WhoIsResponse{
+				Node: &tailcfg.Node{
+					ComputedName: "MyLaptop",
+					Addresses:    []netip.Prefix{netip.MustParsePrefix("100.64.0.5/32")},
+				},
+				UserProfile: &tailcfg.UserProfile{
+					ID:          12345,
+					LoginName:   "alice@github",
+					DisplayName: "Alice Smith",
+				},
+			}, nil
+		},
+	}
+
+	a := NewAuthenticatorFromWhoIser(mock).WithUsernameFormat(UsernameFormatFull)
+
+	req, _ := http.NewRequest("GET", "http://example.com", nil)
+	req.RemoteAddr = "100.64.0.5:12345"
+
+	id, err := a.Identify(req)
+	require.NoError(t, err)
+	assert.Equal(t, "alice-github", id.LoginName)
+}
+
+func TestIdentify_PrimaryDomainFormat(t *testing.T) {
+	mock := &mockWhoIser{
+		fn: func(_ context.Context, _ string) (*apitype.WhoIsResponse, error) {
+			return &apitype.WhoIsResponse{
+				Node: &tailcfg.Node{
+					ComputedName: "MyLaptop",
+					Addresses:    []netip.Prefix{netip.MustParsePrefix("100.64.0.5/32")},
+				},
+				UserProfile: &tailcfg.UserProfile{
+					ID:          12345,
+					LoginName:   "alice@github",
+					DisplayName: "Alice Smith",
+				},
+			}, nil
+		},
+	}
+
+	a := NewAuthenticatorFromWhoIser(mock).WithUsernameFormat("github")
+
+	req, _ := http.NewRequest("GET", "http://example.com", nil)
+	req.RemoteAddr = "100.64.0.5:12345"
+
+	id, err := a.Identify(req)
+	require.NoError(t, err)
+	assert.Equal(t, "alice", id.LoginName)
+}
+
+func TestIdentify_PrimaryDomainMismatch(t *testing.T) {
+	mock := &mockWhoIser{
+		fn: func(_ context.Context, _ string) (*apitype.WhoIsResponse, error) {
+			return &apitype.WhoIsResponse{
+				Node: &tailcfg.Node{
+					ComputedName: "MyLaptop",
+					Addresses:    []netip.Prefix{netip.MustParsePrefix("100.64.0.5/32")},
+				},
+				UserProfile: &tailcfg.UserProfile{
+					ID:          12345,
+					LoginName:   "alice@google",
+					DisplayName: "Alice Smith",
+				},
+			}, nil
+		},
+	}
+
+	a := NewAuthenticatorFromWhoIser(mock).WithUsernameFormat("github")
+
+	req, _ := http.NewRequest("GET", "http://example.com", nil)
+	req.RemoteAddr = "100.64.0.5:12345"
+
+	id, err := a.Identify(req)
+	require.NoError(t, err)
+	assert.Equal(t, "alice-google", id.LoginName)
+}
+
 func TestIdentify_LoginNameWithoutDomain(t *testing.T) {
 	mock := &mockWhoIser{
 		fn: func(_ context.Context, _ string) (*apitype.WhoIsResponse, error) {
@@ -143,6 +224,41 @@ func TestIdentify_NoTailscaleIP(t *testing.T) {
 	_, err := a.Identify(req)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no Tailscale IP")
+}
+
+func TestSanitizeLoginName(t *testing.T) {
+	tests := []struct {
+		name      string
+		loginName string
+		format    UsernameFormat
+		want      string
+	}{
+		{"short strips domain", "alice@github", UsernameFormatShort, "alice"},
+		{"short no domain", "bob", UsernameFormatShort, "bob"},
+		{"full replaces @", "alice@github", UsernameFormatFull, "alice-github"},
+		{"full replaces @ and .", "alice@company.com", UsernameFormatFull, "alice-company-com"},
+		{"full no domain", "bob", UsernameFormatFull, "bob"},
+		{"full uppercase", "Alice@GitHub", UsernameFormatFull, "alice-github"},
+		{"short uppercase", "Alice@GitHub", UsernameFormatShort, "alice"},
+		// Primary domain: matching domain is shortened, others get full format
+		{"primary domain match", "alice@github", "github", "alice"},
+		{"primary domain mismatch", "alice@google", "github", "alice-google"},
+		{"primary domain mismatch dotted", "alice@company.com", "github", "alice-company-com"},
+		{"primary domain no domain", "bob", "github", "bob"},
+		{"primary domain case insensitive", "Alice@GitHub", "github", "alice"},
+		{"primary domain mismatch case", "Alice@Google", "github", "alice-google"},
+		// Dotted primary domain (e.g. "redo.com")
+		{"dotted primary match", "alice@redo.com", "redo.com", "alice"},
+		{"dotted primary mismatch", "alice@other.com", "redo.com", "alice-other-com"},
+		{"dotted primary no domain", "bob", "redo.com", "bob"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SanitizeLoginName(tt.loginName, tt.format)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func TestTailscaleIPFromAddrs(t *testing.T) {

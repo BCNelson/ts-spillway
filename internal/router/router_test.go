@@ -44,8 +44,23 @@ func TestParseHost_SubdomainFormat(t *testing.T) {
 			want: &Route{User: "alice", Machine: "mymachine", Port: 8000},
 		},
 		{
-			name:    "non-numeric port label",
-			host:    "abc.mymachine.alice.spillway.redo.run",
+			name: "alias subdomain",
+			host: "myapp.mymachine.alice.spillway.redo.run",
+			want: &Route{User: "alice", Machine: "mymachine", Alias: "myapp"},
+		},
+		{
+			name: "alias with hyphens",
+			host: "my-cool-app.mymachine.alice.spillway.redo.run",
+			want: &Route{User: "alice", Machine: "mymachine", Alias: "my-cool-app"},
+		},
+		{
+			name:    "invalid alias starting with hyphen",
+			host:    "-badname.mymachine.alice.spillway.redo.run",
+			wantErr: true,
+		},
+		{
+			name:    "invalid alias ending with hyphen",
+			host:    "badname-.mymachine.alice.spillway.redo.run",
 			wantErr: true,
 		},
 	}
@@ -133,4 +148,36 @@ func TestParseRequest(t *testing.T) {
 	route, err := r.ParseRequest(req)
 	require.NoError(t, err)
 	assert.Equal(t, &Route{User: "alice", Machine: "mymachine", Port: 8000}, route)
+}
+
+func TestValidateAlias(t *testing.T) {
+	tests := []struct {
+		name    string
+		alias   string
+		wantErr bool
+	}{
+		{"valid simple", "myapp", false},
+		{"valid with hyphens", "my-cool-app", false},
+		{"valid with numbers", "app2", false},
+		{"valid single char", "a", false},
+		{"empty", "", true},
+		{"starts with digit", "1app", true},
+		{"starts with hyphen", "-app", true},
+		{"ends with hyphen", "app-", true},
+		{"uppercase", "MyApp", true},
+		{"has underscore", "my_app", true},
+		{"has dot", "my.app", true},
+		{"too long", "a" + string(make([]byte, 63)), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateAlias(tt.alias)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }

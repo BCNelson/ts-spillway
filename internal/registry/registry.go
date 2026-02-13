@@ -12,6 +12,7 @@ type Registration struct {
 	Port        int
 	TailscaleIP string
 	ExpiresAt   time.Time
+	Alias       string // Optional alias name for this port
 }
 
 // MachineRef identifies a user/machine pair.
@@ -45,4 +46,16 @@ type Store interface {
 
 	// SaveMachine persists machine-to-IP mapping.
 	SaveMachine(ctx context.Context, user, machineName, tailscaleIP string) error
+
+	// RegisterAlias maps an alias to a port for a user's machine.
+	RegisterAlias(ctx context.Context, user, machine, alias string, port int) error
+
+	// DeregisterAlias removes an alias mapping.
+	DeregisterAlias(ctx context.Context, user, machine, alias string) error
+
+	// LookupAlias returns the port for a given alias, or 0 if not found.
+	LookupAlias(ctx context.Context, user, machine, alias string) (port int, err error)
+
+	// RefreshAliasHeartbeat extends the TTL on aliases for the given machine.
+	RefreshAliasHeartbeat(ctx context.Context, user, machine string, aliases []string) error
 }

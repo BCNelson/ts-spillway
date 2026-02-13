@@ -3,8 +3,11 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // ServerConfig holds all server configuration from environment variables.
@@ -59,6 +62,14 @@ type ServerConfig struct {
 
 	// TSEphemeral marks the Tailscale node as ephemeral (removed on disconnect).
 	TSEphemeral bool
+
+	// UsernameFormat controls how login names are sanitized for DNS.
+	// "short" (default): strips domain — "alice@github" -> "alice"
+	// "full": replaces special chars — "alice@github" -> "alice-github"
+	// Any other value is treated as a primary domain: users matching that
+	// domain are shortened, others get the full format.
+	// e.g. "github": "alice@github" -> "alice", "alice@google" -> "alice-google"
+	UsernameFormat string
 }
 
 // LoadServerConfig reads configuration from environment variables with sensible defaults.
@@ -79,6 +90,7 @@ func LoadServerConfig() (*ServerConfig, error) {
 		TSIDToken:           envOrFile("SPILLWAY_TS_ID_TOKEN", "SPILLWAY_TS_ID_TOKEN_FILE"),
 		TSAudience:          envOrFile("SPILLWAY_TS_AUDIENCE", "SPILLWAY_TS_AUDIENCE_FILE"),
 		TSEphemeral:         os.Getenv("SPILLWAY_TS_EPHEMERAL") == "true",
+		UsernameFormat:      envOrDefault("SPILLWAY_USERNAME_FORMAT", "short"),
 	}
 
 	portRange := envOrDefault("SPILLWAY_PORT_RANGE", "8000-9000")
@@ -96,13 +108,90 @@ func LoadServerConfig() (*ServerConfig, error) {
 type ClientConfig struct {
 	// ServerAddr is the Tailscale address of the spillway server.
 	ServerAddr string
+
+	// Aliases maps port numbers to friendly alias names.
+	Aliases map[int]string
 }
 
-// LoadClientConfig reads client configuration from environment variables.
+// LoadClientConfig reads client configuration from environment variables
+// and loads aliases from the config file.
 func LoadClientConfig() *ClientConfig {
-	return &ClientConfig{
+	cfg := &ClientConfig{
 		ServerAddr: envOrDefault("SPILLWAY_SERVER", "spillway:9090"),
 	}
+	cfg.Aliases = loadAliasConfig()
+	return cfg
+}
+
+// aliasFileConfig represents the YAML structure for alias configuration.
+type aliasFileConfig struct {
+	Aliases map[int]string `yaml:"aliases"`
+}
+
+// loadAliasConfig reads alias configuration from YAML files in standard locations.
+// Search order: ./spillway.yaml -> $XDG_CONFIG_HOME/spillway/config.yaml -> ~/.config/spillway/config.yaml
+func loadAliasConfig() map[int]string {
+	paths := aliasConfigPaths()
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var cfg aliasFileConfig
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			continue
+		}
+		if len(cfg.Aliases) > 0 {
+			return cfg.Aliases
+		}
+	}
+	return nil
+}
+
+// aliasConfigPaths returns the ordered list of config file paths to search.
+func aliasConfigPaths() []string {
+	var paths []string
+
+	// 1. Current directory
+	paths = append(paths, "spillway.yaml")
+
+	// 2. XDG_CONFIG_HOME
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		paths = append(paths, filepath.Join(xdg, "spillway", "config.yaml"))
+	}
+
+	// 3. ~/.config/spillway/config.yaml
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, ".config", "spillway", "config.yaml"))
+	}
+
+	return paths
+}
+
+// ValidateAlias checks that an alias is a valid DNS label that does not start
+// with a digit. This is re-exported from the router package for convenience
+// but is defined here to avoid circular imports in the client binary.
+// The actual validation logic lives in router.ValidateAlias.
+// This function provides a basic check suitable for client-side pre-validation.
+func ValidateAlias(alias string) error {
+	if alias == "" {
+		return fmt.Errorf("alias must not be empty")
+	}
+	if len(alias) > 63 {
+		return fmt.Errorf("alias must be at most 63 characters")
+	}
+	if alias[0] >= '0' && alias[0] <= '9' {
+		return fmt.Errorf("alias must not start with a digit")
+	}
+	for _, c := range alias {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return fmt.Errorf("alias must contain only lowercase alphanumeric characters and hyphens")
+		}
+	}
+	if strings.HasPrefix(alias, "-") || strings.HasSuffix(alias, "-") {
+		return fmt.Errorf("alias must not start or end with a hyphen")
+	}
+	return nil
 }
 
 // envOrFile returns the value of the env var named key if set and non-empty.

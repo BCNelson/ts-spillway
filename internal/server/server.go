@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/bcnelson/ts-spillway/internal/auth"
@@ -138,7 +139,11 @@ func (s *Server) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("getting tsnet local client: %w", err)
 	}
-	s.authn = auth.NewAuthenticator(lc)
+	authn := auth.NewAuthenticator(lc)
+	if s.cfg.UsernameFormat != "" && s.cfg.UsernameFormat != "short" {
+		authn.WithUsernameFormat(auth.UsernameFormat(s.cfg.UsernameFormat))
+	}
+	s.authn = authn
 
 	// Start registration API listener.
 	// Try ListenService first for Tailscale Services (multi-instance load balancing).
@@ -256,7 +261,8 @@ func (s *Server) Close() {
 // API request/response types
 
 type registerRequest struct {
-	Ports []int `json:"ports"`
+	Ports   []int             `json:"ports"`
+	Aliases map[string]string `json:"aliases,omitempty"` // port (as string) -> alias name
 }
 
 type registerResponse struct {
@@ -264,11 +270,13 @@ type registerResponse struct {
 }
 
 type heartbeatRequest struct {
-	Ports []int `json:"ports"`
+	Ports   []int             `json:"ports"`
+	Aliases map[string]string `json:"aliases,omitempty"`
 }
 
 type deregisterRequest struct {
-	Ports []int `json:"ports"`
+	Ports   []int             `json:"ports"`
+	Aliases map[string]string `json:"aliases,omitempty"`
 }
 
 type statusResponse struct {
@@ -279,6 +287,7 @@ type registrationInfo struct {
 	Port      int       `json:"port"`
 	URLs      []string  `json:"urls"`
 	ExpiresAt time.Time `json:"expires_at"`
+	Alias     string    `json:"alias,omitempty"`
 }
 
 // API Handlers
@@ -319,6 +328,21 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Build reverse alias map: port -> alias
+	portAliases := make(map[int]string)
+	for portStr, alias := range req.Aliases {
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			s.logger.Warn("invalid port in aliases", "port", portStr, "alias", alias)
+			continue
+		}
+		if err := router.ValidateAlias(alias); err != nil {
+			s.logger.Warn("invalid alias", "alias", alias, "error", err)
+			continue
+		}
+		portAliases[port] = alias
+	}
+
 	var urls []string
 	for _, port := range req.Ports {
 		if err := s.store.Register(r.Context(), id.LoginName, id.MachineName, port, id.TailscaleIP); err != nil {
@@ -330,12 +354,24 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("https://%d.%s.%s.%s", port, id.MachineName, id.LoginName, s.cfg.BaseDomain),
 			fmt.Sprintf("https://%s.%s.%s:%d", id.MachineName, id.LoginName, s.cfg.BaseDomain, port),
 		)
+
+		// Register alias if provided for this port
+		if alias, ok := portAliases[port]; ok {
+			if err := s.store.RegisterAlias(r.Context(), id.LoginName, id.MachineName, alias, port); err != nil {
+				s.logger.Error("alias registration failed", "alias", alias, "port", port, "error", err)
+			} else {
+				urls = append(urls,
+					fmt.Sprintf("https://%s.%s.%s.%s", alias, id.MachineName, id.LoginName, s.cfg.BaseDomain),
+				)
+			}
+		}
 	}
 
 	s.logger.Info("registered ports",
 		"user", id.LoginName,
 		"machine", id.MachineName,
 		"ports", req.Ports,
+		"aliases", req.Aliases,
 	)
 
 	writeJSON(w, http.StatusOK, registerResponse{URLs: urls})
@@ -365,6 +401,18 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Refresh alias TTLs if aliases are provided
+	if len(req.Aliases) > 0 {
+		var aliasNames []string
+		for _, alias := range req.Aliases {
+			aliasNames = append(aliasNames, alias)
+		}
+		if err := s.store.RefreshAliasHeartbeat(r.Context(), id.LoginName, id.MachineName, aliasNames); err != nil {
+			s.logger.Error("alias heartbeat failed", "error", err)
+			// Non-fatal: port heartbeat already succeeded
+		}
+	}
+
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -392,10 +440,18 @@ func (s *Server) handleDeregister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Deregister aliases if provided
+	for _, alias := range req.Aliases {
+		if err := s.store.DeregisterAlias(r.Context(), id.LoginName, id.MachineName, alias); err != nil {
+			s.logger.Error("alias deregistration failed", "alias", alias, "error", err)
+		}
+	}
+
 	s.logger.Info("deregistered ports",
 		"user", id.LoginName,
 		"machine", id.MachineName,
 		"ports", req.Ports,
+		"aliases", req.Aliases,
 	)
 
 	w.WriteHeader(http.StatusOK)
@@ -422,14 +478,21 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	var infos []registrationInfo
 	for _, reg := range regs {
-		infos = append(infos, registrationInfo{
+		info := registrationInfo{
 			Port:      reg.Port,
 			ExpiresAt: reg.ExpiresAt,
+			Alias:     reg.Alias,
 			URLs: []string{
 				fmt.Sprintf("https://%d.%s.%s.%s", reg.Port, reg.Machine, reg.User, s.cfg.BaseDomain),
 				fmt.Sprintf("https://%s.%s.%s:%d", reg.Machine, reg.User, s.cfg.BaseDomain, reg.Port),
 			},
-		})
+		}
+		if reg.Alias != "" {
+			info.URLs = append(info.URLs,
+				fmt.Sprintf("https://%s.%s.%s.%s", reg.Alias, reg.Machine, reg.User, s.cfg.BaseDomain),
+			)
+		}
+		infos = append(infos, info)
 	}
 
 	writeJSON(w, http.StatusOK, statusResponse{Registrations: infos})
