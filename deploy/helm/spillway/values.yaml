@@ -1,0 +1,80 @@
+image:
+  repository: ghcr.io/bcnelson/ts-spillway/spillway-server
+  tag: ""          # defaults to appVersion
+  pullPolicy: IfNotPresent
+
+config:
+  baseDomain: "spillway.redo.run"
+  portRange: "8000-9000"
+  acmeEmail: ""              # required
+  acmeDirectory: ""          # empty = Let's Encrypt production
+  apiPort: 9090
+  heartbeatTTL: 90
+  tsHostname: "spillway"
+  serviceName: "svc:spillway"
+
+externalRedis:
+  addr: ""
+
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: false
+  master:
+    persistence:
+      size: 1Gi
+
+secrets:
+  aws:
+    existingSecret: ""
+    accessKeyId: ""
+    secretAccessKey: ""
+    region: ""
+    hostedZoneId: ""
+  tailscale:
+    existingSecret: ""
+    authKey: ""
+
+persistence:
+  enabled: false             # ephemeral by default
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  existingClaim: ""
+
+service:
+  type: LoadBalancer
+  annotations: {}
+  portRangeEnabled: true
+
+replicas: 1
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+podSecurityContext:
+  fsGroup: 65532
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+    add:
+      - NET_BIND_SERVICE
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+extraEnv: []
