@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "spillway.fullname" . }}
+  labels:
+    {{- include "spillway.labels" . | nindent 4 }}
+data:
+  SPILLWAY_BASE_DOMAIN: {{ .Values.config.baseDomain | quote }}
+  SPILLWAY_PORT_RANGE: {{ .Values.config.portRange | quote }}
+  SPILLWAY_API_PORT: {{ .Values.config.apiPort | quote }}
+  SPILLWAY_HEARTBEAT_TTL: {{ .Values.config.heartbeatTTL | quote }}
+  SPILLWAY_TS_HOSTNAME: {{ .Values.config.tsHostname | quote }}
+  SPILLWAY_SERVICE_NAME: {{ .Values.config.serviceName | quote }}
+  SPILLWAY_TS_STATE_DIR: "/var/lib/spillway/tsnet"
+  SPILLWAY_REDIS_ADDR: {{ include "spillway.redisAddr" . | quote }}
+  {{- if .Values.config.acmeEmail }}
+  SPILLWAY_ACME_EMAIL: {{ .Values.config.acmeEmail | quote }}
+  {{- end }}
+  {{- if .Values.config.acmeDirectory }}
+  SPILLWAY_ACME_DIRECTORY: {{ .Values.config.acmeDirectory | quote }}
+  {{- end }}

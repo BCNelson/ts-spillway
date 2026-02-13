@@ -1,0 +1,12 @@
+apiVersion: v2
+name: spillway
+description: A Helm chart for deploying spillway-server to Kubernetes
+type: application
+version: 0.0.0-dev
+appVersion: "0.0.0-dev"
+
+dependencies:
+  - name: redis
+    version: ~20.x
+    repository: oci://registry-1.docker.io/bitnamicharts
+    condition: redis.enabled

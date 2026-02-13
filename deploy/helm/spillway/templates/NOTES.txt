@@ -1,0 +1,33 @@
+Spillway has been deployed!
+
+1. Get the load balancer IP/hostname:
+
+   kubectl get svc {{ include "spillway.fullname" . }} -n {{ .Release.Namespace }}
+
+2. Create a wildcard DNS record pointing to the load balancer:
+
+   *.{{ .Values.config.baseDomain }} -> <LOAD_BALANCER_IP>
+
+3. Tailscale auth key:
+
+   The pod requires a TS_AUTHKEY to register with Tailscale on every start.
+   Use an **ephemeral** auth key from the Tailscale admin console so stale
+   nodes are automatically cleaned up.
+
+{{- if .Values.service.portRangeEnabled }}
+
+4. Port range warning:
+
+   The Service exposes ports {{ .Values.config.portRange }} individually.
+   Some cloud load balancers have listener limits (e.g., AWS NLB defaults
+   to 50 listeners). Check your provider's limits or set
+   service.portRangeEnabled=false to handle port exposure externally.
+{{- end }}
+
+{{- if not .Values.persistence.enabled }}
+
+5. Ephemeral mode:
+
+   tsnet state uses an emptyDir volume. Each pod restart gets a fresh
+   Tailscale identity. Set persistence.enabled=true for persistent nodes.
+{{- end }}

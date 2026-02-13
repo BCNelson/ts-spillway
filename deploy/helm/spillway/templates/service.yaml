@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "spillway.fullname" . }}
+  labels:
+    {{- include "spillway.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "spillway.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP
+    {{- if .Values.service.portRangeEnabled }}
+    {{- /* Parse portRange "start-end" and generate a port entry for each */}}
+    {{- $parts := splitList "-" .Values.config.portRange }}
+    {{- $start := index $parts 0 | int }}
+    {{- $end := index $parts 1 | int }}
+    {{- range $i := until (add1 (sub $end $start) | int) }}
+    {{- $port := add $start $i }}
+    - name: port-{{ $port }}
+      port: {{ $port }}
+      targetPort: {{ $port }}
+      protocol: TCP
+    {{- end }}
+    {{- end }}
