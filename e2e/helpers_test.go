@@ -418,6 +418,7 @@ func setupE2E(t *testing.T) *e2eEnv {
 		ACMEEmail:           "test@example.com",
 		ACMEDirectory:       pebbleDir,
 		TSStateDir:          t.TempDir(),
+		TSHostname:          "spillway",
 		RegistrationAPIPort: apiPort,
 		HeartbeatTTL:        90,
 	}
